@@ -39,6 +39,12 @@ if arquivo:
     for linha in linhas:
         texto_linha = linha.get_text(separator=" ", strip=True).upper()
         
+        # --- NOVO: TRAVA DE SEGURANÇA (STOP) ---
+        # Se encontrar os totais gerais, o robô para de ler imediatamente.
+        if "TOTAL DA FILIAL" in texto_linha or "TOTAL DA EMPRESA" in texto_linha:
+            st.info("Fim da lista de técnicos identificada (Totais gerais ignorados).")
+            break
+        
         # Acha o técnico
         if "TOTAL DO FUNCIONARIO" in texto_linha:
             try:
@@ -63,16 +69,15 @@ if arquivo:
     # --- 4. EXIBIÇÃO E ENVIO ---
     if len(dados_para_enviar) > 0:
         df = pd.DataFrame(dados_para_enviar, columns=["Data", "Arquivo", "Técnico", "Horas"])
-        st.success(f"Encontrei {len(dados_para_enviar)} registros!")
+        st.success(f"Encontrei {len(dados_para_enviar)} registros de técnicos!")
         st.dataframe(df)
         
         if st.button("Confirmar e Gravar"):
-            with st.spinner("Conectando à planilha pelo ID..."):
+            with st.spinner("Conectando à planilha..."):
                 try:
                     client = conectar_sheets()
                     
-                    # --- AQUI É A MUDANÇA CRÍTICA ---
-                    # Substitua o código abaixo pelo ID da sua planilha
+                    # ID da Planilha que validamos anteriormente
                     ID_PLANILHA = "1XibBlm2x46Dk5bf4JvfrMepD4gITdaOtTALSgaFcwV0"
                     
                     arquivo_sheet = client.open_by_key(ID_PLANILHA)
@@ -88,7 +93,7 @@ if arquivo:
                     aba.append_rows(dados_para_enviar)
                     
                     st.balloons()
-                    st.success(f"✅ Sucesso! {len(dados_para_enviar)} linhas adicionadas na aba 'Comissoes'.")
+                    st.success(f"✅ Sucesso! {len(dados_para_enviar)} lançamentos realizados.")
                     
                 except Exception as e:
                     if "200" in str(e):
