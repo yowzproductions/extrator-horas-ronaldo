@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
-import re # Biblioteca para encontrar padrões de texto (datas)
+import re
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Processador de Comissões", layout="wide")
@@ -29,26 +29,24 @@ if arquivo:
     conteudo = arquivo.read().decode("utf-8", errors='ignore')
     soup = BeautifulSoup(conteudo, "html.parser")
     
-    # --- NOVO: CAPTURA INTELIGENTE DA DATA ---
-    # Convertemos todo o HTML em texto puro para procurar a data no cabeçalho
+    # --- CAPTURA INTELIGENTE DA DATA ---
     texto_completo = soup.get_text(separator=" ", strip=True)
     
-    # Procuramos o padrão: palavra "até" seguida de uma data (dd/mm/aaaa)
-    # A regex procura por dígitos \d{2}/\d{2}/\d{4}
+    # Procura data após a palavra "até"
     match_data = re.search(r"até\s+(\d{2}/\d{2}/\d{4})", texto_completo, re.IGNORECASE)
     
     if match_data:
-        data_relatorio = match_data.group(1) # Pega a data encontrada (Ex: 05/12/2025)
+        data_relatorio = match_data.group(1)
         st.success(f"📅 Data do Relatório identificada: {data_relatorio}")
     else:
-        # Tenta pegar qualquer data no formato dd/mm/aaaa que apareça no início
+        # Tenta pegar qualquer data no início
         match_generico = re.search(r"(\d{2}/\d{2}/\d{4})", texto_completo)
         if match_generico:
             data_relatorio = match_generico.group(1)
             st.warning(f"⚠️ Usei a primeira data encontrada: {data_relatorio}. Confirme se está correta.")
         else:
             data_relatorio = datetime.now().strftime("%d/%m/%Y")
-            st.error("⚠️ Não encontrei nenhuma data no arquivo. Usando data de hoje.")
+            st.error("⚠️ Não encontrei data. Usando hoje.")
 
     # --- INÍCIO DO PROCESSAMENTO ---
     dados_para_enviar = []
@@ -60,16 +58,20 @@ if arquivo:
     for linha in linhas:
         texto_linha = linha.get_text(separator=" ", strip=True).upper()
         
-        # TRAVA DE SEGURANÇA (Para não pegar totais gerais)
+        # TRAVA DE SEGURANÇA
         if "TOTAL DA FILIAL" in texto_linha or "TOTAL DA EMPRESA" in texto_linha:
             st.info("Fim da lista de técnicos identificada (Totais gerais ignorados).")
             break
         
-        # Acha o técnico
+        # --- AQUI ESTÁ A CORREÇÃO DA SIGLA ---
         if "TOTAL DO FUNCIONARIO" in texto_linha:
             try:
+                # 1. Pega o que vem depois de "TOTAL DO FUNCIONARIO"
                 parte_nome = texto_linha.split("TOTAL DO FUNCIONARIO")[1]
-                tecnico_atual = parte_nome.replace(":", "").strip()
+                # 2. Remove dois pontos e espaços extras
+                texto_sujo = parte_nome.replace(":", "").strip()
+                # 3. PEGA APENAS A PRIMEIRA PALAVRA (A Sigla)
+                tecnico_atual = texto_sujo.split()[0] 
             except:
                 continue 
                 
@@ -83,7 +85,6 @@ if arquivo:
                 if "HORAS" in texto_celula and any(c.isdigit() for c in texto_celula) and "VENDIDAS" not in texto_celula:
                     valor_limpo = texto_celula.replace("HORAS", "").strip()
                     
-                    # AQUI USAMOS A DATA DO RELATÓRIO, NÃO A DE HOJE
                     dados_para_enviar.append([data_relatorio, arquivo.name, tecnico_atual, valor_limpo])
                     break 
 
@@ -98,7 +99,7 @@ if arquivo:
                 try:
                     client = conectar_sheets()
                     
-                    # SEU ID VALIDADO
+                    # SEU ID DA PLANILHA
                     ID_PLANILHA = "1XibBlm2x46Dk5bf4JvfrMepD4gITdaOtTALSgaFcwV0"
                     
                     arquivo_sheet = client.open_by_key(ID_PLANILHA)
