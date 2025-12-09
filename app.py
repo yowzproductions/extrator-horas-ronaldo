@@ -73,7 +73,7 @@ if arquivo:
                     
                     # --- AQUI É A MUDANÇA CRÍTICA ---
                     # Substitua o código abaixo pelo ID da sua planilha
-                    ID_PLANILHA = "COLOQUE_O_ID_DA_PLANILHA_AQUI" 
+                    ID_PLANILHA = "1XibBlm2x46Dk5bf4JvfrMepD4gITdaOtTALSgaFcwV0"
                     
                     arquivo_sheet = client.open_by_key(ID_PLANILHA)
                     
