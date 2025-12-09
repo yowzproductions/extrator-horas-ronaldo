@@ -28,13 +28,10 @@ if arquivo:
     conteudo = arquivo.read().decode("utf-8", errors='ignore')
     soup = BeautifulSoup(conteudo, "html.parser")
     
-    # Lista para guardar todos os dados encontrados
+    # Lista para guardar dados
     dados_para_enviar = []
-    
-    # Memória do técnico atual
     tecnico_atual = None
     
-    # Pega todas as linhas da tabela
     linhas = soup.find_all("tr")
     
     st.write(f"🔍 Analisando {len(linhas)} linhas do arquivo...")
@@ -59,45 +56,45 @@ if arquivo:
                 
                 if "HORAS" in texto_celula and any(c.isdigit() for c in texto_celula) and "VENDIDAS" not in texto_celula:
                     valor_limpo = texto_celula.replace("HORAS", "").strip()
-                    
                     timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                    # Adiciona à lista
                     dados_para_enviar.append([timestamp, arquivo.name, tecnico_atual, valor_limpo])
                     break 
 
-    # --- 4. EXIBIÇÃO E ENVIO (Alinhado corretamente dentro do if arquivo) ---
+    # --- 4. EXIBIÇÃO E ENVIO ---
     if len(dados_para_enviar) > 0:
         df = pd.DataFrame(dados_para_enviar, columns=["Data", "Arquivo", "Técnico", "Horas"])
         st.success(f"Encontrei {len(dados_para_enviar)} registros!")
         st.dataframe(df)
         
-        if st.button("Confirmar e Gravar na Aba 'Comissoes'"):
-            with st.spinner("Enviando dados..."):
+        if st.button("Confirmar e Gravar"):
+            with st.spinner("Conectando à planilha pelo ID..."):
                 try:
                     client = conectar_sheets()
                     
-                    # Abre o arquivo "Dados_HTML"
-                    sheet_file = client.open("Dados_HTML")
+                    # --- AQUI É A MUDANÇA CRÍTICA ---
+                    # Substitua o código abaixo pelo ID da sua planilha
+                    ID_PLANILHA = "COLOQUE_O_ID_DA_PLANILHA_AQUI" 
                     
-                    # Tenta acessar a aba específica "Comissoes"
+                    arquivo_sheet = client.open_by_key(ID_PLANILHA)
+                    
+                    # Tenta acessar a aba "Comissoes"
                     try:
-                        aba = sheet_file.worksheet("Comissoes")
+                        aba = arquivo_sheet.worksheet("Comissoes")
                     except:
-                        st.error("❌ Não encontrei a aba 'Comissoes'. Verifique o nome na planilha.")
-                        st.stop() # Para o código aqui se não achar a aba
+                        st.error("❌ Erro: Não achei a aba 'Comissoes'. Verifique o nome.")
+                        st.stop()
                     
                     # Envia os dados
                     aba.append_rows(dados_para_enviar)
                     
                     st.balloons()
-                    st.success("✅ Sucesso! Dados gravados na aba 'Comissoes'.")
+                    st.success(f"✅ Sucesso! {len(dados_para_enviar)} linhas adicionadas na aba 'Comissoes'.")
                     
                 except Exception as e:
-                    # Tratamento para o erro falso-positivo "200"
                     if "200" in str(e):
                         st.balloons()
-                        st.success("✅ Sucesso confirmado pelo Google (Código 200).")
+                        st.success("✅ Sucesso confirmado (Protocolo 200).")
                     else:
-                        st.error(f"Erro técnico: {e}")
+                        st.error(f"Erro: {e}")
     else:
-        st.warning("Nenhum dado encontrado. Verifique se o HTML contém 'TOTAL DO FUNCIONARIO' e 'HORAS VENDIDAS'.")
+        st.warning("Nenhum dado encontrado. Verifique o HTML.")
