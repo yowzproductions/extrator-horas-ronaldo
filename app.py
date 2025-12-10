@@ -5,6 +5,11 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 import re
+import unicodedata
+
+# --- FUNÇÃO EXTRA: REMOVER ACENTOS ---
+def remover_acentos(texto):
+    return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Central de Relatórios WLM", layout="wide")
@@ -26,7 +31,7 @@ ID_PLANILHA_MESTRA = "1XibBlm2x46Dk5bf4JvfrMepD4gITdaOtTALSgaFcwV0"
 aba_comissoes, aba_aproveitamento = st.tabs(["💰 Pagamento de Comissões", "⚙️ Aproveitamento Técnico"])
 
 # ==============================================================================
-# SISTEMA 1: PAGAMENTO DE COMISSÕES (MANTIDO IGUAL)
+# SISTEMA 1: PAGAMENTO DE COMISSÕES (MANTIDO)
 # ==============================================================================
 with aba_comissoes:
     st.header("Processador de Comissões")
@@ -40,7 +45,13 @@ with aba_comissoes:
         
         for arquivo in arquivos_comissao:
             try:
-                conteudo = arquivo.read().decode("utf-8", errors='ignore')
+                # Tenta ler como UTF-8, se falhar tenta Latin-1
+                try:
+                    conteudo = arquivo.read().decode("utf-8")
+                except:
+                    arquivo.seek(0)
+                    conteudo = arquivo.read().decode("latin-1")
+
                 soup = BeautifulSoup(conteudo, "html.parser")
                 
                 texto_completo = soup.get_text(separator=" ", strip=True)
@@ -58,7 +69,6 @@ with aba_comissoes:
                     
                     if "TOTAL DO FUNCIONARIO" in texto_linha:
                         try:
-                            # Limpeza da Sigla (Comissões)
                             tecnico_atual = texto_linha.split("TOTAL DO FUNCIONARIO")[1].replace(":", "").strip().split()[0]
                         except:
                             continue 
@@ -89,9 +99,11 @@ with aba_comissoes:
                     except Exception as e:
                         if "200" in str(e): st.success("✅ Sucesso (200).")
                         else: st.error(f"Erro: {e}")
+        else:
+            st.warning("Processamento finalizado, mas nenhum dado foi encontrado. Verifique o arquivo.")
 
 # ==============================================================================
-# SISTEMA 2: APROVEITAMENTO TÉCNICO (DATA E SIGLA LIMPAS)
+# SISTEMA 2: APROVEITAMENTO TÉCNICO (CORRIGIDO E BLINDADO)
 # ==============================================================================
 with aba_aproveitamento:
     st.header("Extrator de Aproveitamento (T.Disp / TP / TG)")
@@ -101,72 +113,87 @@ with aba_aproveitamento:
     
     if arquivos_aprov:
         dados_aprov = []
-        st.write(f"📂 Processando {len(arquivos_aprov)} arquivos...")
+        st.info(f"📂 Iniciando leitura de {len(arquivos_aprov)} arquivos...")
         
         for arquivo in arquivos_aprov:
             try:
-                conteudo = arquivo.read().decode("utf-8", errors='ignore')
+                # --- CORREÇÃO 1: DETECÇÃO DE CODIFICAÇÃO ---
+                # O Python tenta ler como UTF-8. Se der erro, tenta Latin-1 (padrão antigo)
+                raw_data = arquivo.read()
+                try:
+                    conteudo = raw_data.decode("utf-8")
+                except UnicodeDecodeError:
+                    conteudo = raw_data.decode("latin-1")
+                
                 soup = BeautifulSoup(conteudo, "html.parser")
                 tecnico_atual_aprov = None
                 linhas = soup.find_all("tr")
                 
                 for linha in linhas:
-                    texto_linha = linha.get_text(separator=" ", strip=True).upper()
+                    # Pega o texto e remove acentos para facilitar a comparação
+                    texto_original = linha.get_text(separator=" ", strip=True).upper()
+                    texto_limpo = remover_acentos(texto_original) # Transforma MECÂNICO em MECANICO
                     
-                    if "TOTAL FILIAL:" in texto_linha:
+                    # Trava de Segurança
+                    if "TOTAL FILIAL:" in texto_original:
                         break
 
-                    # 1. Identifica e LIMPA o Técnico
-                    if "MECÂNICO:" in texto_linha or "MECANICO:" in texto_linha:
+                    # --- CORREÇÃO 2: BUSCA ROBUSTA DO TÉCNICO ---
+                    # Procura por "MECANICO" (sem acento) ou "MECANICO:"
+                    if "MECANICO" in texto_limpo and ":" in texto_limpo:
                         try:
-                            # Pega o que vem depois de MECANICO:
-                            parte_direita = texto_linha.split("MECANICO:")[1] if "MECANICO:" in texto_linha else texto_linha.split("MECÂNICO:")[1]
-                            
-                            # Lógica de Limpeza Pesada:
-                            # Se tiver traço ("AAD - ALLAN"), pega só o que vem antes do traço
-                            if "-" in parte_direita:
-                                tecnico_limpo = parte_direita.split("-")[0].strip()
+                            # Divide e pega a parte direita
+                            if "MECANICO:" in texto_limpo:
+                                parte_direita = texto_limpo.split("MECANICO:")[1]
                             else:
-                                # Se não tiver traço ("AAD ALLAN"), pega só a primeira palavra
-                                tecnico_limpo = parte_direita.strip().split()[0]
+                                # Caso esteja escrito diferente, tenta pegar o final
+                                parte_direita = texto_limpo.split("MECANICO")[1]
+
+                            # Lógica de Limpeza da Sigla
+                            if "-" in parte_direita:
+                                tecnico_temp = parte_direita.split("-")[0].strip()
+                            else:
+                                tecnico_temp = parte_direita.strip().split()[0]
                             
-                            tecnico_atual_aprov = tecnico_limpo
+                            # Remove pontuação extra se tiver (ex: ":AAD")
+                            tecnico_atual_aprov = tecnico_temp.replace(":", "")
+                            
                         except:
                             continue
 
-                    if "TOT.MEC.:" in texto_linha:
+                    if "TOT.MEC.:" in texto_original:
                         tecnico_atual_aprov = None
                         continue
 
-                    # 2. Identifica e LIMPA a Data
+                    # 3. Identifica e LIMPA a Data
                     if tecnico_atual_aprov:
                         celulas = linha.find_all("td")
                         if not celulas: continue
                         
                         texto_primeira_celula = celulas[0].get_text(strip=True)
                         
-                        # Verifica se começa com formato de data DD/MM/YY
+                        # Verifica formato de data DD/MM/YY
                         if re.match(r"\d{2}/\d{2}/\d{2}", texto_primeira_celula):
                             try:
-                                # LIMPEZA DA DATA:
-                                # Pega "01/12/25 SEG", divide por espaço e pega só o índice [0]
-                                data_limpa = texto_primeira_celula.split()[0] 
+                                data_limpa = texto_primeira_celula.split()[0] # Remove dia da semana
                                 
-                                t_disp = celulas[1].get_text(strip=True)
-                                tp = celulas[2].get_text(strip=True)
-                                tg = celulas[3].get_text(strip=True)
-                                
-                                # Adiciona os dados já limpos
-                                dados_aprov.append([data_limpa, arquivo.name, tecnico_atual_aprov, t_disp, tp, tg])
+                                # Captura segura das colunas (evita erro se a linha for curta)
+                                if len(celulas) >= 4:
+                                    t_disp = celulas[1].get_text(strip=True)
+                                    tp = celulas[2].get_text(strip=True)
+                                    tg = celulas[3].get_text(strip=True)
+                                    
+                                    dados_aprov.append([data_limpa, arquivo.name, tecnico_atual_aprov, t_disp, tp, tg])
                             except IndexError:
                                 continue
 
             except Exception as e:
                 st.error(f"Erro ao ler arquivo {arquivo.name}: {e}")
                 
+        # --- CORREÇÃO 3: FEEDBACK VISUAL ---
         if len(dados_aprov) > 0:
             df_aprov = pd.DataFrame(dados_aprov, columns=["Data", "Arquivo", "Técnico", "T. Disp", "TP", "TG"])
-            st.success(f"Encontrei {len(dados_aprov)} registros limpos!")
+            st.success(f"✅ Processamento concluído! {len(dados_aprov)} registros encontrados.")
             st.dataframe(df_aprov)
             
             if st.button("Gravar Aproveitamento no Sheets", key="btn_aprov"):
@@ -178,7 +205,7 @@ with aba_aproveitamento:
                         try:
                             aba = sheet.worksheet("Aproveitamento")
                         except:
-                            st.error("❌ Erro: Crie a aba 'Aproveitamento'!")
+                            st.error("❌ Erro: Aba 'Aproveitamento' não encontrada.")
                             st.stop()
                             
                         aba.append_rows(dados_aprov)
@@ -186,3 +213,5 @@ with aba_aproveitamento:
                     except Exception as e:
                         if "200" in str(e): st.success("✅ Sucesso (200).")
                         else: st.error(f"Erro: {e}")
+        else:
+            st.warning("⚠️ O robô leu o arquivo mas não encontrou dados. Possíveis causas: \n1. O layout do HTML mudou. \n2. O arquivo está vazio.")
