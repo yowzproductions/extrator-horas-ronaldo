@@ -6,7 +6,6 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 import re
 import unicodedata
-import time
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Central de Relatórios WLM", layout="wide", page_icon="🔒")
@@ -14,7 +13,7 @@ st.set_page_config(page_title="Central de Relatórios WLM", layout="wide", page_
 # ID da sua planilha
 ID_PLANILHA_MESTRA = "1XibBlm2x46Dk5bf4JvfrMepD4gITdaOtTALSgaFcwV0"
 
-# --- FUNÇÕES AUXILIARES ---
+# --- FUNÇÕES TÉCNICAS E AUXILIARES ---
 def remover_acentos(texto):
     return ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
 
@@ -26,7 +25,6 @@ def conectar_sheets():
     return client
 
 def converter_br_para_float(valor):
-    """Transforma '8,30' (str) em 8.3 (float)."""
     if pd.isna(valor) or valor == "": return 0.0
     if isinstance(valor, (int, float)): return float(valor)
     valor_str = str(valor).strip()
@@ -35,19 +33,91 @@ def converter_br_para_float(valor):
     try: return float(valor_str)
     except: return 0.0
 
-# --- FUNÇÃO DE SEGURANÇA ---
 def verificar_acesso():
     try:
         client = conectar_sheets()
         sh = client.open_by_key(ID_PLANILHA_MESTRA)
-        try:
-            ws_config = sh.worksheet("Config")
-            return ws_config.acell('B1').value
+        try: return sh.worksheet("Config").acell('B1').value
         except: return 'admin'
     except: return None
 
-# --- UPSERT (ATUALIZAÇÃO INTELIGENTE DAS ABAS INDIVIDUAIS) ---
+# --- LÓGICA DE PARSEAMENTO HTML (EXTRAÇÃO) ---
+# Separamos isso para poder chamar de qualquer lugar
+def parse_comissoes(arquivos):
+    dados = []
+    for arquivo in arquivos:
+        try:
+            try: conteudo = arquivo.read().decode("utf-8")
+            except: 
+                arquivo.seek(0)
+                conteudo = arquivo.read().decode("latin-1")
+            # Reseta o ponteiro do arquivo para caso precise ler de novo
+            arquivo.seek(0)
+            
+            soup = BeautifulSoup(conteudo, "html.parser")
+            texto_completo = soup.get_text(separator=" ", strip=True)
+            match_data = re.search(r"até\s+(\d{2}/\d{2}/\d{4})", texto_completo, re.IGNORECASE)
+            data_relatorio = match_data.group(1) if match_data else datetime.now().strftime("%d/%m/%Y")
+            tecnico_atual = None
+            for linha in soup.find_all("tr"):
+                texto_linha = linha.get_text(separator=" ", strip=True).upper()
+                if "TOTAL DA FILIAL" in texto_linha or "TOTAL DA EMPRESA" in texto_linha: break
+                if "TOTAL DO FUNCIONARIO" in texto_linha:
+                    try: tecnico_atual = texto_linha.split("TOTAL DO FUNCIONARIO")[1].replace(":", "").strip().split()[0]
+                    except: continue 
+                if tecnico_atual and "HORAS VENDIDAS:" in texto_linha:
+                    celulas = linha.find_all("td")
+                    for celula in celulas:
+                        txt = celula.get_text(strip=True).upper()
+                        if "HORAS" in txt and any(c.isdigit() for c in txt) and "VENDIDAS" not in txt:
+                            dados.append([data_relatorio, arquivo.name, tecnico_atual, txt.replace("HORAS", "").strip()])
+                            break 
+        except Exception as e: st.error(f"Erro no arquivo {arquivo.name}: {e}")
+    return dados
+
+def parse_aproveitamento(arquivos):
+    dados = []
+    for arquivo in arquivos:
+        try:
+            raw_data = arquivo.read()
+            # Reseta ponteiro
+            arquivo.seek(0)
+            try: conteudo = raw_data.decode("utf-8")
+            except:
+                try: conteudo = raw_data.decode("latin-1")
+                except: conteudo = raw_data.decode("utf-16")
+            
+            soup = BeautifulSoup(conteudo, "html.parser")
+            tecnico_atual_aprov = None
+            linhas = soup.find_all("tr")
+            for linha in linhas:
+                texto_original = linha.get_text(separator=" ", strip=True).upper()
+                texto_limpo = remover_acentos(texto_original)
+                if "TOTAL FILIAL:" in texto_original: break
+                if "MECANICO" in texto_limpo and "TOT.MEC" not in texto_limpo:
+                    try:
+                        parte_direita = texto_limpo.split("MECANICO")[1].replace(":", "").strip()
+                        if "-" in parte_direita: tecnico_atual_aprov = parte_direita.split("-")[0].strip()
+                        else: tecnico_atual_aprov = parte_direita.split()[0]
+                    except: continue
+                if "TOT.MEC.:" in texto_original: tecnico_atual_aprov = None; continue
+                if tecnico_atual_aprov:
+                    celulas = linha.find_all("td")
+                    if not celulas: continue
+                    txt_cel0 = celulas[0].get_text(strip=True)
+                    if re.match(r"\d{2}/\d{2}/\d{2}", txt_cel0):
+                        try:
+                            if len(celulas) >= 4:
+                                dados.append([txt_cel0.split()[0], arquivo.name, tecnico_atual_aprov, 
+                                              celulas[1].get_text(strip=True), celulas[2].get_text(strip=True), celulas[3].get_text(strip=True)])
+                        except: continue
+        except Exception as e: st.error(f"Erro no arquivo {arquivo.name}: {e}")
+    return dados
+
+# --- FUNÇÕES DE BANCO DE DADOS (GSPREAD) ---
+
 def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
+    """Lê, Mescla, Remove Duplicatas e Salva."""
     client = conectar_sheets()
     sh = client.open_by_key(ID_PLANILHA_MESTRA)
     
@@ -64,27 +134,22 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
         for col in df_antigo.columns: df_antigo[col] = df_antigo[col].astype(str)
     for col in novos_dados_df.columns: novos_dados_df[col] = novos_dados_df[col].astype(str)
 
-    # Junta antigo com novo e remove duplicatas (mantendo o mais recente)
+    # Upsert
     df_total = pd.concat([df_antigo, novos_dados_df])
     df_final = df_total.drop_duplicates(subset=colunas_chaves, keep='last')
 
-    # Grava na planilha
+    # Limpeza e Gravação
     ws.clear()
-    # ATENÇÃO: Adicionado 'A1' para garantir que a gravação comece no lugar certo
-    lista_dados = [df_final.columns.values.tolist()] + df_final.values.tolist()
-    ws.update('A1', lista_dados)
-    
+    ws.update('A1', [df_final.columns.values.tolist()] + df_final.values.tolist())
     return len(df_final)
 
-# --- O MOTOR DE UNIFICAÇÃO (PARA A ABA CONSOLIDADO) ---
 def processar_unificacao():
+    """Lê as abas salvas, limpa tipos e grava no Consolidado."""
     try:
         client = conectar_sheets()
         sh = client.open_by_key(ID_PLANILHA_MESTRA)
-        try:
-            ws_com = sh.worksheet("Comissoes")
-            ws_aprov = sh.worksheet("Aproveitamento")
-        except: return False
+        ws_com = sh.worksheet("Comissoes")
+        ws_aprov = sh.worksheet("Aproveitamento")
 
         dados_com = ws_com.get_all_records()
         dados_aprov = ws_aprov.get_all_records()
@@ -94,200 +159,151 @@ def processar_unificacao():
         df_com = pd.DataFrame(dados_com)
         df_aprov = pd.DataFrame(dados_aprov)
 
-        # Limpeza e Padronização
+        # Padronização de Colunas
         df_com.columns = [c.strip() for c in df_com.columns]
         df_aprov.columns = [c.strip() for c in df_aprov.columns]
-
+        
         renomear_comissao = {"Data Processamento": "Data", "Sigla Técnico": "Técnico"}
         df_com.rename(columns=renomear_comissao, inplace=True)
 
-        # Seleção de Colunas
-        colunas_uteis_comissao = ['Data', 'Técnico', 'Horas Vendidas']
-        df_com = df_com[[c for c in colunas_uteis_comissao if c in df_com.columns]]
+        # Seleção
+        cols_com = ['Data', 'Técnico', 'Horas Vendidas']
+        df_com = df_com[[c for c in cols_com if c in df_com.columns]]
         
-        colunas_uteis_aprov = ['Data', 'Técnico', 'Disp', 'TP', 'TG']
-        df_aprov = df_aprov[[c for c in colunas_uteis_aprov if c in df_aprov.columns]]
+        cols_aprov = ['Data', 'Técnico', 'Disp', 'TP', 'TG']
+        df_aprov = df_aprov[[c for c in cols_aprov if c in df_aprov.columns]]
 
-        # --- TRATAMENTO NUMÉRICO (CORREÇÃO DA VÍRGULA) ---
-        cols_numericas = ['Horas Vendidas', 'Disp', 'TP', 'TG']
-        for col in cols_numericas:
+        # TRATAMENTO NUMÉRICO (IMPORTANTE)
+        for col in ['Horas Vendidas', 'Disp', 'TP', 'TG']:
             if col in df_com.columns: df_com[col] = df_com[col].apply(converter_br_para_float)
             if col in df_aprov.columns: df_aprov[col] = df_aprov[col].apply(converter_br_para_float)
 
-        # Preparar Chaves para Merge (String)
-        df_com['Data_Key'] = df_com['Data'].astype(str)
-        df_com['Tecnico_Key'] = df_com['Técnico'].astype(str)
-        df_aprov['Data_Key'] = df_aprov['Data'].astype(str)
-        df_aprov['Tecnico_Key'] = df_aprov['Técnico'].astype(str)
+        # Chaves como String para Merge
+        df_com['Key_D'] = df_com['Data'].astype(str)
+        df_com['Key_T'] = df_com['Técnico'].astype(str)
+        df_aprov['Key_D'] = df_aprov['Data'].astype(str)
+        df_aprov['Key_T'] = df_aprov['Técnico'].astype(str)
 
         # Merge
         df_final = pd.merge(
             df_com, df_aprov, 
-            left_on=['Data_Key', 'Tecnico_Key'], right_on=['Data_Key', 'Tecnico_Key'], 
-            how='outer', suffixes=('_Com', '_Aprov')
+            left_on=['Key_D', 'Key_T'], right_on=['Key_D', 'Key_T'], 
+            how='outer', suffixes=('_C', '_A')
         )
+        
+        # Consolida Data e Técnico e Preenche Zeros
         df_final.fillna(0, inplace=True)
-
-        # Consolida Data e Técnico
-        df_final['Data'] = df_final.apply(lambda x: x['Data_x'] if x['Data_x'] != 0 and x['Data_x'] != "0" else x['Data_y'], axis=1)
-        df_final['Técnico'] = df_final.apply(lambda x: x['Técnico_x'] if x['Técnico_x'] != 0 and x['Técnico_x'] != "0" else x['Técnico_y'], axis=1)
+        
+        # Resolve conflito de nomes de colunas
+        df_final['Data'] = df_final.apply(lambda x: x['Data_C'] if x['Data_C'] != 0 and str(x['Data_C']) != "0" else x['Data_A'], axis=1)
+        df_final['Técnico'] = df_final.apply(lambda x: x['Técnico_C'] if x['Técnico_C'] != 0 and str(x['Técnico_C']) != "0" else x['Técnico_A'], axis=1)
 
         # Seleciona Finais
         cols_finais = ['Data', 'Técnico', 'Horas Vendidas', 'Disp', 'TP', 'TG']
         df_final = df_final[[c for c in cols_finais if c in df_final.columns]]
 
-        # Salvar Consolidado
+        # --- A CORREÇÃO DE PREENCHIMENTO ---
+        # Converte tudo para tipos nativos do Python para o Gspread não reclamar (numpy killers)
+        df_final = df_final.astype(object) 
+        df_final.fillna("", inplace=True) # JSON não aceita NaN
+        
         try: ws_final = sh.worksheet("Consolidado")
-        except: ws_final = sh.add_worksheet(title="Consolidado", rows=1000, cols=20)
+        except: ws_final = sh.add_worksheet(title="Consolidado", rows=2000, cols=20)
         
         ws_final.clear()
-        # ATENÇÃO: Adicionado 'A1' aqui também
         ws_final.update('A1', [df_final.columns.values.tolist()] + df_final.values.tolist())
         return True
     except Exception as e:
-        print(f"Erro: {e}")
+        print(f"Erro unificação: {e}")
         return False
 
-# ============================================
-# 🔒 INTERFACE
-# ============================================
-
-st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3064/3064197.png", width=50)
-st.sidebar.title("Login Seguro")
-
-senha_digitada = st.sidebar.text_input("Digite a senha de acesso:", type="password")
-senha_correta = verificar_acesso()
-
-if senha_digitada == senha_correta:
-    st.sidebar.success("✅ Acesso Liberado")
-    st.title("🏭 Central de Processamento de Relatórios")
+# --- ROTINA MESTRA DE GRAVAÇÃO (GLOBAL) ---
+def executar_rotina_global(df_com=None, df_aprov=None):
+    """Salva TUDO o que estiver disponível e atualiza o consolidado."""
+    status_msg = st.empty()
+    bar = st.progress(0)
     
-    aba_comissoes, aba_aproveitamento = st.tabs(["💰 Pagamento de Comissões", "⚙️ Aproveitamento Técnico"])
-
-    # --- TAB 1: COMISSÕES ---
-    with aba_comissoes:
-        st.header("Processador de Comissões")
-        st.info("💡 Substituição Automática: Dados novos substituem os antigos (mesma Data e Técnico).")
-        arquivos_comissao = st.file_uploader("Upload Comissões HTML", type=["html", "htm"], accept_multiple_files=True, key="uploader_comissao")
+    try:
+        # 1. Salva Comissões se houver dados
+        if df_com is not None and not df_com.empty:
+            status_msg.info("💾 Salvando Comissões...")
+            salvar_com_upsert("Comissoes", df_com, ["Data Processamento", "Sigla Técnico"])
+            bar.progress(40)
         
-        if arquivos_comissao:
-            dados_comissao = []
-            st.write(f"📂 Processando {len(arquivos_comissao)} arquivos...")
-            for arquivo in arquivos_comissao:
-                try:
-                    try: conteudo = arquivo.read().decode("utf-8")
-                    except: 
-                        arquivo.seek(0)
-                        conteudo = arquivo.read().decode("latin-1")
-                    soup = BeautifulSoup(conteudo, "html.parser")
-                    texto_completo = soup.get_text(separator=" ", strip=True)
-                    match_data = re.search(r"até\s+(\d{2}/\d{2}/\d{4})", texto_completo, re.IGNORECASE)
-                    data_relatorio = match_data.group(1) if match_data else datetime.now().strftime("%d/%m/%Y")
-                    tecnico_atual = None
-                    for linha in soup.find_all("tr"):
-                        texto_linha = linha.get_text(separator=" ", strip=True).upper()
-                        if "TOTAL DA FILIAL" in texto_linha or "TOTAL DA EMPRESA" in texto_linha: break
-                        if "TOTAL DO FUNCIONARIO" in texto_linha:
-                            try: tecnico_atual = texto_linha.split("TOTAL DO FUNCIONARIO")[1].replace(":", "").strip().split()[0]
-                            except: continue 
-                        if tecnico_atual and "HORAS VENDIDAS:" in texto_linha:
-                            celulas = linha.find_all("td")
-                            for celula in celulas:
-                                txt = celula.get_text(strip=True).upper()
-                                if "HORAS" in txt and any(c.isdigit() for c in txt) and "VENDIDAS" not in txt:
-                                    dados_comissao.append([data_relatorio, arquivo.name, tecnico_atual, txt.replace("HORAS", "").strip()])
-                                    break 
-                except Exception as e: st.error(f"Erro: {e}")
+        # 2. Salva Aproveitamento se houver dados
+        if df_aprov is not None and not df_aprov.empty:
+            status_msg.info("💾 Salvando Aproveitamento...")
+            salvar_com_upsert("Aproveitamento", df_aprov, ["Data", "Técnico"])
+            bar.progress(70)
+            
+        # 3. Sempre tenta unificar
+        status_msg.info("🔄 Atualizando Relatório Consolidado...")
+        sucesso = processar_unificacao()
+        bar.progress(100)
+        
+        if sucesso:
+            status_msg.success("✅ Processo Completo! Todas as bases foram atualizadas.")
+            st.balloons()
+        else:
+            status_msg.warning("⚠️ Bases salvas, mas houve falha na unificação.")
+            
+    except Exception as e:
+        status_msg.error(f"Erro Crítico: {e}")
 
-            if len(dados_comissao) > 0:
-                colunas_comissao = ["Data Processamento", "Nome do Arquivo", "Sigla Técnico", "Horas Vendidas"]
-                df_comissao = pd.DataFrame(dados_comissao, columns=colunas_comissao)
-                st.dataframe(df_comissao)
-                
-                if st.button("💾 Gravar e Atualizar Base (Comissões)", key="btn_comissao"):
-                    progresso = st.progress(0, text="Iniciando...")
-                    try:
-                        # 1. Atualiza a Aba Comissoes
-                        progresso.progress(20, text="Salvando Comissões...")
-                        qtd_final = salvar_com_upsert("Comissoes", df_comissao, ["Data Processamento", "Sigla Técnico"])
-                        
-                        # 2. DISPARA A UNIFICAÇÃO (Aqui está o comando que você sentiu falta)
-                        progresso.progress(60, text="Atualizando Relatório Consolidado...")
-                        sucesso_unificacao = processar_unificacao()
-                        
-                        progresso.progress(100, text="Concluído!")
-                        if sucesso_unificacao:
-                            st.success(f"✅ Tudo certo! Comissões salvas e Relatório Consolidado atualizado.")
-                            st.balloons()
-                        else:
-                            st.warning("⚠️ Comissões salvas, mas houve um erro ao atualizar o Consolidado.")
-                    except Exception as e: st.error(f"Erro crítico: {e}")
+# ============================================
+# INTERFACE PRINCIPAL
+# ============================================
 
-    # --- TAB 2: APROVEITAMENTO ---
-    with aba_aproveitamento:
-        st.header("Extrator de Aproveitamento")
-        st.info("💡 Substituição Automática: Dados novos substituem os antigos (mesma Data e Técnico).")
-        arquivos_aprov = st.file_uploader("Upload Aproveitamento HTML", type=["html", "htm"], accept_multiple_files=True, key="uploader_aprov")
-        if arquivos_aprov:
-            dados_aprov = []
-            for arquivo in arquivos_aprov:
-                try:
-                    raw_data = arquivo.read()
-                    try: conteudo = raw_data.decode("utf-8")
-                    except:
-                        try: conteudo = raw_data.decode("latin-1")
-                        except: conteudo = raw_data.decode("utf-16")
-                    soup = BeautifulSoup(conteudo, "html.parser")
-                    tecnico_atual_aprov = None
-                    linhas = soup.find_all("tr")
-                    for linha in linhas:
-                        texto_original = linha.get_text(separator=" ", strip=True).upper()
-                        texto_limpo = remover_acentos(texto_original)
-                        if "TOTAL FILIAL:" in texto_original: break
-                        if "MECANICO" in texto_limpo and "TOT.MEC" not in texto_limpo:
-                            try:
-                                parte_direita = texto_limpo.split("MECANICO")[1].replace(":", "").strip()
-                                if "-" in parte_direita: tecnico_atual_aprov = parte_direita.split("-")[0].strip()
-                                else: tecnico_atual_aprov = parte_direita.split()[0]
-                            except: continue
-                        if "TOT.MEC.:" in texto_original: tecnico_atual_aprov = None; continue
-                        if tecnico_atual_aprov:
-                            celulas = linha.find_all("td")
-                            if not celulas: continue
-                            txt_cel0 = celulas[0].get_text(strip=True)
-                            if re.match(r"\d{2}/\d{2}/\d{2}", txt_cel0):
-                                try:
-                                    if len(celulas) >= 4:
-                                        dados_aprov.append([txt_cel0.split()[0], arquivo.name, tecnico_atual_aprov, 
-                                                          celulas[1].get_text(strip=True), celulas[2].get_text(strip=True), celulas[3].get_text(strip=True)])
-                                except: continue
-                except Exception as e: st.error(f"Erro leitura: {e}")
+st.sidebar.title("Login Seguro")
+senha = st.sidebar.text_input("Senha:", type="password")
 
-            if len(dados_aprov) > 0:
-                colunas_aprov = ["Data", "Arquivo", "Técnico", "Disp", "TP", "TG"]
-                df_aprov = pd.DataFrame(dados_aprov, columns=colunas_aprov)
-                st.dataframe(df_aprov)
-                
-                if st.button("💾 Gravar e Atualizar Base (Aproveitamento)", key="btn_aprov"):
-                    progresso = st.progress(0, text="Iniciando...")
-                    try:
-                        # 1. Atualiza a Aba Aproveitamento
-                        progresso.progress(20, text="Salvando Aproveitamento...")
-                        qtd_final = salvar_com_upsert("Aproveitamento", df_aprov, ["Data", "Técnico"])
-                        
-                        # 2. DISPARA A UNIFICAÇÃO (Comando garantido)
-                        progresso.progress(60, text="Atualizando Relatório Consolidado...")
-                        sucesso_unificacao = processar_unificacao()
-                        
-                        progresso.progress(100, text="Concluído!")
-                        if sucesso_unificacao:
-                            st.success(f"✅ Tudo certo! Aproveitamento salvo e Relatório Consolidado atualizado.")
-                            st.balloons()
-                        else:
-                            st.warning("⚠️ Aproveitamento salvo, mas houve um erro ao atualizar o Consolidado.")
-                    except Exception as e: st.error(f"Erro crítico: {e}")
+if senha == verificar_acesso():
+    st.sidebar.success("Acesso Liberado")
+    st.title("🏭 Central de Processamento WLM")
+    
+    # Uploaders ficam fora das tabs para garantir acesso global? 
+    # Não, mantemos nas tabs por organização, mas checaremos o session state
+    
+    aba1, aba2 = st.tabs(["💰 Comissões", "⚙️ Aproveitamento"])
 
-elif senha_digitada == "":
-    st.info("👈 Digite a senha na barra lateral.")
+    # Variáveis globais para armazenar os dados processados
+    df_comissao_global = None
+    df_aprov_global = None
+
+    # --- ABA 1 ---
+    with aba1:
+        st.header("Upload Comissões")
+        files_com = st.file_uploader("Arquivos HTML", accept_multiple_files=True, key="up_com")
+        if files_com:
+            dados_c = parse_comissoes(files_com)
+            if dados_c:
+                df_comissao_global = pd.DataFrame(dados_c, columns=["Data Processamento", "Nome do Arquivo", "Sigla Técnico", "Horas Vendidas"])
+                st.dataframe(df_comissao_global, height=200)
+
+    # --- ABA 2 ---
+    with aba2:
+        st.header("Upload Aproveitamento")
+        files_aprov = st.file_uploader("Arquivos HTML/SLK", accept_multiple_files=True, key="up_aprov")
+        if files_aprov:
+            dados_a = parse_aproveitamento(files_aprov)
+            if dados_a:
+                df_aprov_global = pd.DataFrame(dados_a, columns=["Data", "Arquivo", "Técnico", "Disp", "TP", "TG"])
+                st.dataframe(df_aprov_global, height=200)
+
+    # --- BOTÃO DE AÇÃO GLOBAL (Visível em ambas as abas ou fixo) ---
+    st.divider()
+    col_btn, col_txt = st.columns([1, 4])
+    
+    with col_btn:
+        # Este botão agora olha para TUDO
+        if st.button("🚀 GRAVAR TUDO E ATUALIZAR", type="primary"):
+            if df_comissao_global is None and df_aprov_global is None:
+                st.warning("Nenhum arquivo carregado em nenhuma das abas.")
+            else:
+                executar_rotina_global(df_comissao_global, df_aprov_global)
+    
+    with col_txt:
+        st.caption("ℹ️ Este botão salva os arquivos de Comissões E Aproveitamento simultaneamente, se estiverem carregados, e regenera o painel do Looker Studio.")
+
 else:
-    st.error("🔒 Senha incorreta.")
+    st.error("Senha incorreta.")
