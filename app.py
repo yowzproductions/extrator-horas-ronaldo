@@ -23,25 +23,49 @@ def conectar_sheets():
     return client
 
 def converter_br_para_float(valor):
-    """Lê do HTML (8,30) e vira Float Python (8.3) para cálculo."""
-    if pd.isna(valor) or valor == "": return 0.0
-    if isinstance(valor, (int, float)): return float(valor)
+    """
+    CORREÇÃO CRÍTICA:
+    Converte formato Brasileiro (8,30) para Float Python (8.3).
+    Impede que 8,30 vire 830.0
+    """
+    if pd.isna(valor) or valor == "": 
+        return 0.0
+    
+    if isinstance(valor, (int, float)): 
+        return float(valor)
+    
     valor_str = str(valor).strip()
-    if '.' in valor_str and ',' in valor_str: valor_str = valor_str.replace('.', '')
+    
+    # Remove R$ se houver
+    valor_str = valor_str.replace('R$', '').strip()
+
+    # Lógica de Milhar:
+    # Se tiver PONTO e VÍRGULA (ex: 1.200,50), remove o ponto dos milhares
+    if '.' in valor_str and ',' in valor_str: 
+        valor_str = valor_str.replace('.', '')
+    
+    # Lógica Decimal:
+    # Troca a vírgula brasileira pelo ponto americano
+    # Ex: "8,30" -> "8.30"
     valor_str = valor_str.replace(',', '.')
-    try: return float(valor_str)
-    except: return 0.0
+
+    try: 
+        return float(valor_str)
+    except: 
+        return 0.0
 
 def float_para_string_br(valor):
     """
-    Transforma Float Python (8.3) em String Excel BR ('8,3').
+    Transforma Float Python (8.3) em String Excel BR ('8,30').
     Isso força o Google Sheets a reconhecer a vírgula corretamente.
     """
-    if pd.isna(valor) or valor == "": return ""
-    # Arredonda para 2 casas para ficar bonito
-    valor_float = float(valor)
-    # Formata trocando ponto por virgula
-    return f"{valor_float:.2f}".replace('.', ',')
+    try:
+        if pd.isna(valor) or valor == "": return ""
+        valor_float = float(valor)
+        # Formata com 2 casas decimais e troca ponto por vírgula
+        return f"{valor_float:.2f}".replace('.', ',')
+    except:
+        return str(valor)
 
 def verificar_acesso():
     try:
@@ -51,7 +75,7 @@ def verificar_acesso():
         except: return 'admin'
     except: return None
 
-# --- PARSERS (LEITURA) ---
+# --- PARSERS (LEITURA DOS ARQUIVOS) ---
 def parse_comissoes(arquivos):
     dados = []
     for arquivo in arquivos:
@@ -66,19 +90,25 @@ def parse_comissoes(arquivos):
             texto_completo = soup.get_text(separator=" ", strip=True)
             match_data = re.search(r"até\s+(\d{2}/\d{2}/\d{4})", texto_completo, re.IGNORECASE)
             data_relatorio = match_data.group(1) if match_data else datetime.now().strftime("%d/%m/%Y")
+            
             tecnico_atual = None
             for linha in soup.find_all("tr"):
                 texto_linha = linha.get_text(separator=" ", strip=True).upper()
+                
                 if "TOTAL DA FILIAL" in texto_linha or "TOTAL DA EMPRESA" in texto_linha: break
+                
                 if "TOTAL DO FUNCIONARIO" in texto_linha:
                     try: tecnico_atual = texto_linha.split("TOTAL DO FUNCIONARIO")[1].replace(":", "").strip().split()[0]
                     except: continue 
+                
                 if tecnico_atual and "HORAS VENDIDAS:" in texto_linha:
                     celulas = linha.find_all("td")
                     for celula in celulas:
                         txt = celula.get_text(strip=True).upper()
+                        # Extrai apenas se parecer número e não for o rótulo
                         if "HORAS" in txt and any(c.isdigit() for c in txt) and "VENDIDAS" not in txt:
-                            dados.append([data_relatorio, arquivo.name, tecnico_atual, txt.replace("HORAS", "").strip()])
+                            valor_limpo = txt.replace("HORAS", "").strip()
+                            dados.append([data_relatorio, arquivo.name, tecnico_atual, valor_limpo])
                             break 
         except Exception as e: st.error(f"Erro no arquivo {arquivo.name}: {e}")
     return dados
@@ -91,42 +121,50 @@ def parse_aproveitamento(arquivos):
             try: conteudo = arquivo.read().decode("utf-8")
             except:
                 try: conteudo = arquivo.read().decode("latin-1")
-                except: conteudo = raw_data.decode("utf-16")
+                except: conteudo = arquivo.read().decode("utf-16")
             
             soup = BeautifulSoup(conteudo, "html.parser")
             tecnico_atual_aprov = None
             linhas = soup.find_all("tr")
+            
             for linha in linhas:
                 texto_original = linha.get_text(separator=" ", strip=True).upper()
                 texto_limpo = remover_acentos(texto_original)
+                
                 if "TOTAL FILIAL:" in texto_original: break
+                
                 if "MECANICO" in texto_limpo and "TOT.MEC" not in texto_limpo:
                     try:
                         parte_direita = texto_limpo.split("MECANICO")[1].replace(":", "").strip()
                         if "-" in parte_direita: tecnico_atual_aprov = parte_direita.split("-")[0].strip()
                         else: tecnico_atual_aprov = parte_direita.split()[0]
                     except: continue
-                if "TOT.MEC.:" in texto_original: tecnico_atual_aprov = None; continue
+                
+                if "TOT.MEC.:" in texto_original: 
+                    tecnico_atual_aprov = None; continue
+                
                 if tecnico_atual_aprov:
                     celulas = linha.find_all("td")
                     if not celulas: continue
                     txt_cel0 = celulas[0].get_text(strip=True)
+                    
                     if re.match(r"\d{2}/\d{2}/\d{2}", txt_cel0):
                         try:
                             if len(celulas) >= 4:
-                                dados.append([txt_cel0.split()[0], arquivo.name, tecnico_atual_aprov, 
-                                              celulas[1].get_text(strip=True), celulas[2].get_text(strip=True), celulas[3].get_text(strip=True)])
+                                dados.append([
+                                    txt_cel0.split()[0], 
+                                    arquivo.name, 
+                                    tecnico_atual_aprov, 
+                                    celulas[1].get_text(strip=True), 
+                                    celulas[2].get_text(strip=True), 
+                                    celulas[3].get_text(strip=True)
+                                ])
                         except: continue
         except Exception as e: st.error(f"Erro no arquivo {arquivo.name}: {e}")
     return dados
 
 # --- GRAVAÇÃO INTELIGENTE (PRESERVA FORMATAÇÃO) ---
 def atualizar_planilha_preservando_formato(sh, nome_aba, df_final):
-    """
-    1. Verifica se aba existe.
-    2. Limpa APENAS dados (mantém formatação de cabeçalho).
-    3. Escreve dados novos.
-    """
     try:
         ws = sh.worksheet(nome_aba)
     except:
@@ -135,19 +173,19 @@ def atualizar_planilha_preservando_formato(sh, nome_aba, df_final):
     # 1. Garante Cabeçalho se estiver vazia
     if not ws.get_all_values():
         ws.update('A1', [df_final.columns.values.tolist()])
-        # Se acabou de criar, aplicamos negrito básico (opcional)
         try: ws.format('A1:Z1', {'textFormat': {'bold': True}})
         except: pass
 
-    # 2. Limpa DADOS (Linha 2 para baixo) - Preserva Formatação da Linha 1
+    # 2. Limpa DADOS (Linha 2 para baixo)
     ws.batch_clear(["A2:Z10000"])
 
-    # 3. Prepara Dados
+    # 3. Prepara Dados (Trata NaN como string vazia para o Sheets)
+    df_final = df_final.fillna("")
     dados_para_enviar = df_final.values.tolist()
     
-    # 4. Envia (Se tiver dados)
+    # 4. Envia
     if dados_para_enviar:
-        ws.update('A2', dados_para_enviar) # Começa na linha 2
+        ws.update('A2', dados_para_enviar)
         
     return True
 
@@ -156,7 +194,6 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
     client = conectar_sheets()
     sh = client.open_by_key(ID_PLANILHA_MESTRA)
     
-    # Lê dados atuais para comparar
     try:
         ws = sh.worksheet(nome_aba)
         dados_antigos = ws.get_all_records()
@@ -164,7 +201,7 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
     except:
         df_antigo = pd.DataFrame()
 
-    # Strings para comparação
+    # Strings para comparação segura
     if not df_antigo.empty:
         for col in df_antigo.columns: df_antigo[col] = df_antigo[col].astype(str)
     for col in novos_dados_df.columns: novos_dados_df[col] = novos_dados_df[col].astype(str)
@@ -173,11 +210,11 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
     df_total = pd.concat([df_antigo, novos_dados_df])
     df_final = df_total.drop_duplicates(subset=colunas_chaves, keep='last')
 
-    # Usa a nova função de gravação
+    # Usa a função de gravação
     atualizar_planilha_preservando_formato(sh, nome_aba, df_final)
     return len(df_final)
 
-# --- UNIFICAÇÃO (CORRIGIDA COM VÍRGULA) ---
+# --- UNIFICAÇÃO (CORRIGIDA) ---
 def processar_unificacao():
     try:
         client = conectar_sheets()
@@ -193,7 +230,7 @@ def processar_unificacao():
         df_com = pd.DataFrame(dados_com)
         df_aprov = pd.DataFrame(dados_aprov)
 
-        # Limpeza
+        # Limpeza de colunas
         df_com.columns = [c.strip() for c in df_com.columns]
         df_aprov.columns = [c.strip() for c in df_aprov.columns]
         
@@ -206,19 +243,20 @@ def processar_unificacao():
         cols_aprov = ['Data', 'Técnico', 'Disp', 'TP', 'TG']
         df_aprov = df_aprov[[c for c in cols_aprov if c in df_aprov.columns]]
 
-        # 1. CONVERTE PARA FLOAT (PARA CALCULAR/UNIR)
+        # 1. CONVERTE PARA FLOAT (O MOMENTO DA VERDADE)
+        # Aqui garantimos que '8,30' vira 8.3 antes de qualquer cálculo
         cols_numericas = ['Horas Vendidas', 'Disp', 'TP', 'TG']
         for col in cols_numericas:
             if col in df_com.columns: df_com[col] = df_com[col].apply(converter_br_para_float)
             if col in df_aprov.columns: df_aprov[col] = df_aprov[col].apply(converter_br_para_float)
 
-        # Chaves String
+        # Chaves String para Merge
         df_com['Key_D'] = df_com['Data'].astype(str)
         df_com['Key_T'] = df_com['Técnico'].astype(str)
         df_aprov['Key_D'] = df_aprov['Data'].astype(str)
         df_aprov['Key_T'] = df_aprov['Técnico'].astype(str)
 
-        # Merge
+        # Merge (União das tabelas)
         df_final = pd.merge(
             df_com, df_aprov, 
             left_on=['Key_D', 'Key_T'], right_on=['Key_D', 'Key_T'], 
@@ -226,18 +264,18 @@ def processar_unificacao():
         )
         df_final.fillna(0, inplace=True)
         
+        # Consolidação de Data e Técnico
         df_final['Data'] = df_final.apply(lambda x: x['Data_C'] if x['Data_C'] != 0 and str(x['Data_C']) != "0" else x['Data_A'], axis=1)
         df_final['Técnico'] = df_final.apply(lambda x: x['Técnico_C'] if x['Técnico_C'] != 0 and str(x['Técnico_C']) != "0" else x['Técnico_A'], axis=1)
 
         cols_finais = ['Data', 'Técnico', 'Horas Vendidas', 'Disp', 'TP', 'TG']
         df_final = df_final[[c for c in cols_finais if c in df_final.columns]]
 
-        # 2. CONVERTE DE VOLTA PARA STRING COM VÍRGULA (PARA PLANILHA BR)
-        # Isso garante que 8.3 vire "8,30" e o Sheets entenda.
+        # 2. CONVERTE DE VOLTA PARA STRING COM VÍRGULA (PARA VISUALIZAÇÃO)
         for col in ['Horas Vendidas', 'Disp', 'TP', 'TG']:
              df_final[col] = df_final[col].apply(float_para_string_br)
 
-        # Grava preservando formatação
+        # Grava na aba consolidado
         atualizar_planilha_preservando_formato(sh, "Consolidado", df_final)
         return True
     except Exception as e:
@@ -264,10 +302,10 @@ def executar_rotina_global(df_com=None, df_aprov=None):
         bar.progress(100)
         
         if sucesso:
-            status_msg.success("✅ Sucesso! Dados com vírgula e formatados.")
+            status_msg.success("✅ Sucesso! Dados Consolidados Corretamente.")
             st.balloons()
         else:
-            status_msg.warning("⚠️ Salvo, mas erro na unificação.")
+            status_msg.warning("⚠️ Dados salvos, mas houve erro na unificação.")
             
     except Exception as e: status_msg.error(f"Erro: {e}")
 
@@ -305,7 +343,8 @@ if senha == verificar_acesso():
     col_btn, col_txt = st.columns([1, 4])
     with col_btn:
         if st.button("🚀 GRAVAR TUDO E ATUALIZAR", type="primary"):
-            if df_comissao_global is None and df_aprov_global is None: st.warning("Sem arquivos.")
+            if df_comissao_global is None and df_aprov_global is None: st.warning("Sem arquivos para processar.")
             else: executar_rotina_global(df_comissao_global, df_aprov_global)
 else:
-    st.error("Senha incorreta.")
+    if senha:
+        st.error("Senha incorreta.")
