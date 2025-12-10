@@ -25,6 +25,33 @@ def conectar_sheets():
     client = gspread.authorize(creds)
     return client
 
+def converter_br_para_float(valor):
+    """
+    Transforma '8,30' (str) em 8.3 (float).
+    Remove pontos de milhar e troca vírgula por ponto.
+    """
+    if pd.isna(valor) or valor == "":
+        return 0.0
+    
+    # Se já for número (int ou float), retorna ele mesmo
+    if isinstance(valor, (int, float)):
+        return float(valor)
+        
+    valor_str = str(valor).strip()
+    
+    # Remove ponto de milhar se existir (ex: 1.000,00 -> 1000,00)
+    # Cuidado: assumindo que ponto é milhar e virgula é decimal
+    if '.' in valor_str and ',' in valor_str:
+        valor_str = valor_str.replace('.', '')
+    
+    # Troca vírgula por ponto (8,3 -> 8.3)
+    valor_str = valor_str.replace(',', '.')
+    
+    try:
+        return float(valor_str)
+    except:
+        return 0.0
+
 # --- FUNÇÃO DE SEGURANÇA ---
 def verificar_acesso():
     try:
@@ -35,25 +62,15 @@ def verificar_acesso():
             senha_real = ws_config.acell('B1').value
             return senha_real
         except:
-            ws_config = sh.add_worksheet(title="Config", rows=10, cols=5)
-            ws_config.update('A1', 'Senha Mestra')
-            ws_config.update('B1', 'admin')
             return 'admin'
     except Exception as e:
         return None
 
-# --- NOVA FUNÇÃO INTELIGENTE: UPSERT (ATUALIZAÇÃO) ---
+# --- UPSERT (ATUALIZAÇÃO INTELIGENTE) ---
 def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
-    """
-    1. Lê a aba atual.
-    2. Junta com os novos dados.
-    3. Remove duplicatas baseadas nas chaves (Data + Técnico), mantendo o ÚLTIMO (novo).
-    4. Reescreve a aba.
-    """
     client = conectar_sheets()
     sh = client.open_by_key(ID_PLANILHA_MESTRA)
     
-    # Tenta abrir a aba, se não existir, cria
     try:
         ws = sh.worksheet(nome_aba)
         dados_antigos = ws.get_all_records()
@@ -62,29 +79,24 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
         ws = sh.add_worksheet(title=nome_aba, rows=1000, cols=20)
         df_antigo = pd.DataFrame()
 
-    # Se a planilha antiga não estiver vazia, converte tudo para string para garantir comparação
+    # Garante que tudo é string para comparar chaves corretamente
     if not df_antigo.empty:
         for col in df_antigo.columns:
             df_antigo[col] = df_antigo[col].astype(str)
             
-    # Converte novos dados para string também
     for col in novos_dados_df.columns:
         novos_dados_df[col] = novos_dados_df[col].astype(str)
 
-    # Concatena (Antigo + Novo)
+    # Concatena e Remove Duplicatas
     df_total = pd.concat([df_antigo, novos_dados_df])
-
-    # REMOVE DUPLICATAS (O Segredo)
-    # keep='last' significa: se achar repetido, mantenha o que entrou por último (o novo upload)
     df_final = df_total.drop_duplicates(subset=colunas_chaves, keep='last')
 
-    # Limpa e Salva
     ws.clear()
     ws.update([df_final.columns.values.tolist()] + df_final.values.tolist())
     
     return len(df_final)
 
-# --- O MOTOR DE UNIFICAÇÃO (MANTIDO) ---
+# --- O MOTOR DE UNIFICAÇÃO (CORRIGIDO PARA NÚMEROS REAIS) ---
 def processar_unificacao():
     try:
         client = conectar_sheets()
@@ -102,26 +114,73 @@ def processar_unificacao():
         df_com = pd.DataFrame(dados_com)
         df_aprov = pd.DataFrame(dados_aprov)
 
-        # Limpeza e Padronização
+        # Limpeza de Nomes
         df_com.columns = [c.strip() for c in df_com.columns]
         df_aprov.columns = [c.strip() for c in df_aprov.columns]
-        
-        # Converte tudo para string para evitar erros de merge
-        df_com = df_com.astype(str)
-        df_aprov = df_aprov.astype(str)
 
+        # Padronização das Chaves
         renomear_comissao = {"Data Processamento": "Data", "Sigla Técnico": "Técnico"}
         df_com.rename(columns=renomear_comissao, inplace=True)
 
+        # Filtro de Colunas Úteis
         colunas_uteis_comissao = ['Data', 'Técnico', 'Horas Vendidas']
-        df_com = df_com[[c for c in colunas_uteis_comissao if c in df_com.columns]]
+        # Filtra apenas se existirem
+        cols_com_existentes = [c for c in colunas_uteis_comissao if c in df_com.columns]
+        df_com = df_com[cols_com_existentes]
         
         colunas_uteis_aprov = ['Data', 'Técnico', 'Disp', 'TP', 'TG']
-        df_aprov = df_aprov[[c for c in colunas_uteis_aprov if c in df_aprov.columns]]
+        cols_aprov_existentes = [c for c in colunas_uteis_aprov if c in df_aprov.columns]
+        df_aprov = df_aprov[cols_aprov_existentes]
 
-        df_final = pd.merge(df_com, df_aprov, on=['Data', 'Técnico'], how='outer', suffixes=('_Com', '_Aprov'))
-        df_final.fillna("", inplace=True)
+        # --- TRATAMENTO NUMÉRICO (A CORREÇÃO DO 8,30 -> 8.3) ---
+        # Converte as colunas numéricas de texto BR para float Python
+        
+        # Lista de colunas que DEVEM ser números
+        cols_numericas = ['Horas Vendidas', 'Disp', 'TP', 'TG']
+        
+        # Aplica na tabela Comissões
+        for col in cols_numericas:
+            if col in df_com.columns:
+                df_com[col] = df_com[col].apply(converter_br_para_float)
+                
+        # Aplica na tabela Aproveitamento
+        for col in cols_numericas:
+            if col in df_aprov.columns:
+                df_aprov[col] = df_aprov[col].apply(converter_br_para_float)
 
+        # --- FIM DO TRATAMENTO NUMÉRICO ---
+
+        # Preparar chaves para o Merge (Data e Técnico precisam ser String para cruzar)
+        df_com['Data_Key'] = df_com['Data'].astype(str)
+        df_com['Tecnico_Key'] = df_com['Técnico'].astype(str)
+        
+        df_aprov['Data_Key'] = df_aprov['Data'].astype(str)
+        df_aprov['Tecnico_Key'] = df_aprov['Técnico'].astype(str)
+
+        # Merge usando as chaves auxiliares
+        df_final = pd.merge(
+            df_com, 
+            df_aprov, 
+            left_on=['Data_Key', 'Tecnico_Key'],
+            right_on=['Data_Key', 'Tecnico_Key'], 
+            how='outer', 
+            suffixes=('_Com', '_Aprov')
+        )
+        
+        # Limpeza pós-merge
+        df_final.fillna(0, inplace=True) # Preenche vazios numéricos com 0
+
+        # Consolida as colunas de Data e Técnico (pega de um lado ou do outro)
+        df_final['Data'] = df_final.apply(lambda x: x['Data_x'] if x['Data_x'] != 0 and x['Data_x'] != "0" else x['Data_y'], axis=1)
+        df_final['Técnico'] = df_final.apply(lambda x: x['Técnico_x'] if x['Técnico_x'] != 0 and x['Técnico_x'] != "0" else x['Técnico_y'], axis=1)
+
+        # Seleciona colunas finais limpas
+        cols_finais = ['Data', 'Técnico', 'Horas Vendidas', 'Disp', 'TP', 'TG']
+        # Garante que só pega colunas que existem no resultado
+        cols_finais_validas = [c for c in cols_finais if c in df_final.columns]
+        df_final = df_final[cols_finais_validas]
+
+        # Salvar
         try: ws_final = sh.worksheet("Consolidado")
         except: ws_final = sh.add_worksheet(title="Consolidado", rows=1000, cols=20)
         
@@ -152,7 +211,7 @@ if senha_digitada == senha_correta:
     # --- TAB 1: COMISSÕES ---
     with aba_comissoes:
         st.header("Processador de Comissões")
-        st.info("💡 Lógica de Substituição Ativa: Se você carregar um relatório com Data e Técnico já existentes, o sistema atualizará os valores antigos.")
+        st.info("💡 Se houver duplicidade (Data + Técnico), o sistema mantém o dado mais recente.")
         arquivos_comissao = st.file_uploader("Upload Comissões HTML", type=["html", "htm"], accept_multiple_files=True, key="uploader_comissao")
         
         if arquivos_comissao:
@@ -192,24 +251,19 @@ if senha_digitada == senha_correta:
                 if st.button("💾 Gravar e Atualizar Base (Comissões)", key="btn_comissao"):
                     progresso = st.progress(0, text="Iniciando...")
                     try:
-                        progresso.progress(20, text="Lendo base atual e verificando duplicatas...")
-                        
-                        # --- CHAMA A FUNÇÃO INTELIGENTE ---
-                        # Chaves para identificar duplicidade: Data e Técnico
+                        progresso.progress(20, text="Verificando duplicatas...")
                         qtd_final = salvar_com_upsert("Comissoes", df_comissao, ["Data Processamento", "Sigla Técnico"])
-                        
-                        progresso.progress(70, text=f"Base atualizada ({qtd_final} registros). Recalculando unificação...")
+                        progresso.progress(70, text=f"Base atualizada. Recalculando unificação...")
                         processar_unificacao()
-                        
                         progresso.progress(100, text="Concluído!")
-                        st.success("✅ Sucesso! Dados atualizados (duplicatas substituídas) e Relatório Consolidado pronto.")
+                        st.success(f"✅ Sucesso! Base atualizada e corrigida.")
                         st.balloons()
                     except Exception as e: st.error(f"Erro: {e}")
 
     # --- TAB 2: APROVEITAMENTO ---
     with aba_aproveitamento:
         st.header("Extrator de Aproveitamento")
-        st.info("💡 Lógica de Substituição Ativa: Dados da mesma Data e Técnico serão sobrescritos pelos mais recentes.")
+        st.info("💡 Dados da mesma Data e Técnico serão sobrescritos pelos mais recentes.")
         arquivos_aprov = st.file_uploader("Upload Aproveitamento HTML", type=["html", "htm"], accept_multiple_files=True, key="uploader_aprov")
         if arquivos_aprov:
             dados_aprov = []
@@ -254,17 +308,12 @@ if senha_digitada == senha_correta:
                 if st.button("💾 Gravar e Atualizar Base (Aproveitamento)", key="btn_aprov"):
                     progresso = st.progress(0, text="Iniciando...")
                     try:
-                        progresso.progress(20, text="Lendo base atual e verificando duplicatas...")
-                        
-                        # --- CHAMA A FUNÇÃO INTELIGENTE ---
-                        # Chaves: Data e Técnico
+                        progresso.progress(20, text="Verificando duplicatas...")
                         qtd_final = salvar_com_upsert("Aproveitamento", df_aprov, ["Data", "Técnico"])
-                        
-                        progresso.progress(70, text=f"Base atualizada ({qtd_final} registros). Recalculando unificação...")
+                        progresso.progress(70, text=f"Base atualizada. Recalculando unificação...")
                         processar_unificacao()
-                        
                         progresso.progress(100, text="Concluído!")
-                        st.success("✅ Sucesso! Dados atualizados e Relatório Consolidado pronto.")
+                        st.success("✅ Sucesso!")
                         st.balloons()
                     except Exception as e: st.error(f"Erro: {e}")
 
