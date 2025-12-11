@@ -51,6 +51,32 @@ def converter_br_para_float(valor):
     except: 
         return 0.0
 
+def padronizar_data_quatro_digitos(data_str):
+    """
+    NOVA FUNÇÃO CRÍTICA:
+    Transforma '08/12/25' em '08/12/2025'.
+    Garante que as chaves de data sejam idênticas para o merge.
+    """
+    if pd.isna(data_str) or data_str == "":
+        return ""
+    
+    data_str = str(data_str).strip()
+    
+    # Verifica se tem barras
+    if '/' in data_str:
+        partes = data_str.split('/')
+        # Se tiver 3 partes (dia, mes, ano)
+        if len(partes) == 3:
+            dia, mes, ano = partes
+            # Se o ano tiver apenas 2 dígitos, adiciona '20' na frente
+            if len(ano) == 2:
+                ano = '20' + ano
+            
+            # Reconstrói a data padronizada com zeros à esquerda se precisar (ex: 8 vira 08)
+            return f"{dia.zfill(2)}/{mes.zfill(2)}/{ano}"
+            
+    return data_str
+
 def verificar_acesso():
     try:
         client = conectar_sheets()
@@ -186,7 +212,7 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
     atualizar_planilha_preservando_formato(sh, nome_aba, df_final)
     return len(df_final)
 
-# --- UNIFICAÇÃO (COM A REGRA DE DIVISÃO POR 100) ---
+# --- UNIFICAÇÃO (COM PADRONIZAÇÃO DE DATA + CORREÇÃO /100) ---
 def processar_unificacao():
     try:
         client = conectar_sheets()
@@ -213,7 +239,15 @@ def processar_unificacao():
         cols_aprov = ['Data', 'Técnico', 'Disp', 'TP', 'TG']
         df_aprov = df_aprov[[c for c in cols_aprov if c in df_aprov.columns]]
 
-        # Conversão Inicial
+        # --- APLICA A CORREÇÃO DE DATA AQUI ---
+        # Antes de fazer o Merge, garantimos que "25" vira "2025"
+        if 'Data' in df_com.columns:
+            df_com['Data'] = df_com['Data'].apply(padronizar_data_quatro_digitos)
+        
+        if 'Data' in df_aprov.columns:
+            df_aprov['Data'] = df_aprov['Data'].apply(padronizar_data_quatro_digitos)
+
+        # Conversão Numérica Inicial
         cols_numericas = ['Horas Vendidas', 'Disp', 'TP', 'TG']
         for col in cols_numericas:
             if col in df_com.columns: df_com[col] = df_com[col].apply(converter_br_para_float)
@@ -232,16 +266,15 @@ def processar_unificacao():
         )
         df_final.fillna(0.0, inplace=True)
         
-        # Consolidar Chaves
+        # Consolidar Chaves (Data e Técnico)
         df_final['Data'] = df_final.apply(lambda x: x['Data_C'] if x['Data_C'] != 0 and str(x['Data_C']) != "0" else x['Data_A'], axis=1)
         df_final['Técnico'] = df_final.apply(lambda x: x['Técnico_C'] if x['Técnico_C'] != 0 and str(x['Técnico_C']) != "0" else x['Técnico_A'], axis=1)
 
         cols_finais = ['Data', 'Técnico', 'Horas Vendidas', 'Disp', 'TP', 'TG']
         df_final = df_final[[c for c in cols_finais if c in df_final.columns]]
 
-        # --- A REGRA DE OURO (SOLICITAÇÃO DO USUÁRIO) ---
+        # --- A REGRA DE OURO (CORREÇÃO DECIMAL) ---
         # Divide todas as colunas numéricas por 100 antes de salvar no Consolidado.
-        # Isso corrige o problema de "8,30 vira 830" (agora 830 vira 8.3).
         for col in ['Horas Vendidas', 'Disp', 'TP', 'TG']:
              if col in df_final.columns:
                  df_final[col] = df_final[col] / 100.0
@@ -257,9 +290,6 @@ def executar_rotina_global(df_com=None, df_aprov=None):
     status_msg = st.empty()
     bar = st.progress(0)
     try:
-        # Nota: As abas intermediárias podem continuar salvando "bruto",
-        # pois a correção /100 acontece na Unificação final.
-        
         if df_com is not None and not df_com.empty:
             status_msg.info("💾 Salvando Comissões...")
             salvar_com_upsert("Comissoes", df_com, ["Data Processamento", "Sigla Técnico"])
@@ -270,12 +300,12 @@ def executar_rotina_global(df_com=None, df_aprov=None):
             salvar_com_upsert("Aproveitamento", df_aprov, ["Data", "Técnico"])
             bar.progress(70)
             
-        status_msg.info("🔄 Unificando bases e aplicando correção (/100)...")
+        status_msg.info("🔄 Unificando bases e Padronizando Datas...")
         sucesso = processar_unificacao()
         bar.progress(100)
         
         if sucesso:
-            status_msg.success("✅ Sucesso! Dados Consolidados e Corrigidos.")
+            status_msg.success("✅ Sucesso! Dados Consolidados, Datas Alinhadas e Valores Corrigidos.")
             st.balloons()
         else:
             status_msg.warning("⚠️ Salvo, mas erro na unificação.")
