@@ -62,7 +62,7 @@ def verificar_acesso():
         except: return 'admin'
     except: return None
 
-# --- PARSERS (MANTIDOS ORIGINAIS/PERFEITOS) ---
+# --- PARSERS (MANTIDOS ORIGINAIS) ---
 def parse_comissoes(arquivos):
     dados = []
     for arquivo in arquivos:
@@ -163,7 +163,7 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
     atualizar_planilha_preservando_formato(sh, nome_aba, df_final)
     return len(df_final)
 
-# --- UNIFICAÇÃO (COM A LÓGICA DE DIVISÃO CONDICIONAL) ---
+# --- UNIFICAÇÃO (RÉGUA ATUALIZADA: DIVISÃO GLOBAL POR 100) ---
 def processar_unificacao():
     try:
         client = conectar_sheets()
@@ -212,13 +212,11 @@ def processar_unificacao():
         cols_finais = ['Data', 'Técnico', 'Horas Vendidas', 'Disp', 'TP', 'TG']
         df_final = df_final[[c for c in cols_finais if c in df_final.columns]]
 
-        # --- APLICAÇÃO DA REGRA DE DIVISÃO POR 100 (INTELIGENTE) ---
-        # AQUI obedecemos sua ordem: dividir ao gravar no Consolidado.
-        # Mas colocamos o 'if x > 100' para não quebrar os dados novos que já estão certos.
-        # Ex: 830 -> vira 8.3 | 8.30 -> continua 8.30
+        # --- NOVA LÓGICA: DIVIDIR TUDO POR 100 ---
+        # Removida a condição 'if abs(x) > 100'. Agora aplica a todos.
         for col in ['Horas Vendidas', 'Disp', 'TP', 'TG']:
              if col in df_final.columns:
-                 df_final[col] = df_final[col].apply(lambda x: x / 100.0 if abs(x) > 100 else x)
+                 df_final[col] = df_final[col].apply(lambda x: x / 100.0)
 
         atualizar_planilha_preservando_formato(sh, "Consolidado", df_final)
         return True
@@ -239,12 +237,12 @@ def executar_rotina_global(df_com=None, df_aprov=None):
             salvar_com_upsert("Aproveitamento", df_aprov, ["Data", "Técnico"])
             bar.progress(70)
             
-        status_msg.info("🔄 Unificando bases e Corrigindo Valores...")
+        status_msg.info("🔄 Unificando bases (Consolidado - Divisão/100)...")
         sucesso = processar_unificacao()
         bar.progress(100)
         
         if sucesso:
-            status_msg.success("✅ Sucesso! Dados Consolidados e Corrigidos.")
+            status_msg.success("✅ Sucesso! Dados Consolidados.")
             st.balloons()
     except Exception as e: status_msg.error(f"Erro: {e}")
 
