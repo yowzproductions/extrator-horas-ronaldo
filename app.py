@@ -215,21 +215,26 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
     except:
         df_antigo = pd.DataFrame()
 
-    # --- BLINDAGEM E PADRONIZAÇÃO ---
+    # --- BLINDAGEM DE TIPOS (CORREÇÃO DO ERRO 'SERIES') ---
     for col in colunas_chaves:
         if col in novos_dados_df.columns:
-            novos_dados_df[col] = novos_dados_df[col].astype(str).str.strip().upper()
+            # O segredo é o .str.strip().str.upper()
+            novos_dados_df[col] = novos_dados_df[col].astype(str).str.strip().str.upper()
         if not df_antigo.empty and col in df_antigo.columns:
-            df_antigo[col] = df_antigo[col].astype(str).str.strip().upper()
+            df_antigo[col] = df_antigo[col].astype(str).str.strip().str.upper()
 
     if not df_antigo.empty:
-        # LÓGICA DE LIMPEZA: Se a data está no novo arquivo, removemos o antigo daquela data
-        datas_novas = novos_dados_df['Data Processamento' if 'Data Processamento' in novos_dados_df.columns else 'Data'].unique()
+        # Define qual é a coluna de data (depende da aba)
+        col_data = 'Data Processamento' if 'Data Processamento' in novos_dados_df.columns else 'Data'
         
-        # Filtra o DF antigo para manter apenas datas que NÃO estão sendo enviadas agora
-        col_data = 'Data Processamento' if 'Data Processamento' in df_antigo.columns else 'Data'
+        # 1. Identifica quais datas estão no novo upload
+        datas_novas = novos_dados_df[col_data].unique()
+        
+        # 2. LIMPEZA ESTRATÉGICA: Remove do DF antigo apenas as datas que estão chegando agora
+        # Isso garante que se não estiver no novo relatório, vira "zero" (é excluído)
         df_antigo = df_antigo[~df_antigo[col_data].isin(datas_novas)]
         
+        # 3. Une os dados antigos (de outras datas) com os novos (da data atual)
         df_final = pd.concat([df_antigo, novos_dados_df], ignore_index=True)
     else:
         df_final = novos_dados_df
