@@ -215,31 +215,32 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
     except:
         df_antigo = pd.DataFrame()
 
-    # --- BLINDAGEM DE TIPOS (CORREÇÃO DO ERRO 'SERIES') ---
+    # --- 1. PADRONIZAÇÃO AGRESSIVA (Evita duplicados por erro de digitação/espaço) ---
     for col in colunas_chaves:
         if col in novos_dados_df.columns:
-            # O segredo é o .str.strip().str.upper()
             novos_dados_df[col] = novos_dados_df[col].astype(str).str.strip().str.upper()
         if not df_antigo.empty and col in df_antigo.columns:
             df_antigo[col] = df_antigo[col].astype(str).str.strip().str.upper()
 
+    # --- 2. LÓGICA DE SUBSTITUIÇÃO (CLEAN & LOAD) ---
     if not df_antigo.empty:
-        # Define qual é a coluna de data (depende da aba)
+        # Identifica a coluna de data (pode variar entre as abas)
         col_data = 'Data Processamento' if 'Data Processamento' in novos_dados_df.columns else 'Data'
         
-        # 1. Identifica quais datas estão no novo upload
+        # Pega as datas que estamos subindo agora
         datas_novas = novos_dados_df[col_data].unique()
         
-        # 2. LIMPEZA ESTRATÉGICA: Remove do DF antigo apenas as datas que estão chegando agora
-        # Isso garante que se não estiver no novo relatório, vira "zero" (é excluído)
-        df_antigo = df_antigo[~df_antigo[col_data].isin(datas_novas)]
+        # MANTÉM apenas o que NÃO pertence às datas do novo arquivo
+        # Isso deleta as duplicatas e os técnicos que não aparecem no novo relatório
+        df_final = df_antigo[~df_antigo[col_data].isin(datas_novas)]
         
-        # 3. Une os dados antigos (de outras datas) com os novos (da data atual)
-        df_final = pd.concat([df_antigo, novos_dados_df], ignore_index=True)
+        # Adiciona o novo bloco completo
+        df_final = pd.concat([df_final, novos_dados_df], ignore_index=True)
     else:
         df_final = novos_dados_df
     
-    df_final = df_final.fillna(0)
+    # --- 3. GRAVAÇÃO FINAL ---
+    df_final = df_final.fillna(0.0)
     atualizar_planilha_preservando_formato(sh, nome_aba, df_final)
     return len(df_final)
 
