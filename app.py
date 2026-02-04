@@ -84,6 +84,20 @@ def verificar_acesso():
         except: return 'admin'
     except: return None
 
+def obter_ultima_atualizacao():
+    try:
+        client = conectar_sheets()
+        sh = client.open_by_key(ID_PLANILHA_MESTRA)
+        ws = sh.worksheet("Consolidado")
+        datas = ws.col_values(1)[1:] # Coluna A (Data)
+        if not datas: return "Nenhuma"
+        
+        # Converte para datetime para achar a maior
+        datas_dt = pd.to_datetime(datas, dayfirst=True, errors='coerce')
+        ultima_data = datas_dt.max().strftime('%d/%m/%Y')
+        return ultima_data
+    except:
+        return "Erro ao ler"
 # --- PARSERS (LEITURA) ---
 def parse_comissoes(arquivos):
     dados = []
@@ -201,26 +215,26 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
     except:
         df_antigo = pd.DataFrame()
 
-# --- BLINDAGEM DE TIPOS (VERSÃO CORRIGIDA) ---
+    # --- BLINDAGEM E PADRONIZAÇÃO ---
     for col in colunas_chaves:
         if col in novos_dados_df.columns:
-            # Usamos .str para indicar que a operação é no texto de cada célula
-            novos_dados_df[col] = novos_dados_df[col].astype(str).str.strip().str.upper()
-        
+            novos_dados_df[col] = novos_dados_df[col].astype(str).str.strip().upper()
         if not df_antigo.empty and col in df_antigo.columns:
-            df_antigo[col] = df_antigo[col].astype(str).str.strip().str.upper()
+            df_antigo[col] = df_antigo[col].astype(str).str.strip().upper()
 
     if not df_antigo.empty:
-        # Unifica
-        df_total = pd.concat([df_antigo, novos_dados_df], ignore_index=True)
-        # Remove duplicados mantendo o ÚLTIMO (o que você acabou de carregar)
-        df_final = df_total.drop_duplicates(subset=colunas_chaves, keep='last')
+        # LÓGICA DE LIMPEZA: Se a data está no novo arquivo, removemos o antigo daquela data
+        datas_novas = novos_dados_df['Data Processamento' if 'Data Processamento' in novos_dados_df.columns else 'Data'].unique()
+        
+        # Filtra o DF antigo para manter apenas datas que NÃO estão sendo enviadas agora
+        col_data = 'Data Processamento' if 'Data Processamento' in df_antigo.columns else 'Data'
+        df_antigo = df_antigo[~df_antigo[col_data].isin(datas_novas)]
+        
+        df_final = pd.concat([df_antigo, novos_dados_df], ignore_index=True)
     else:
         df_final = novos_dados_df
     
-    # Limpeza final de segurança para a planilha não receber objetos estranhos
     df_final = df_final.fillna(0)
-    
     atualizar_planilha_preservando_formato(sh, nome_aba, df_final)
     return len(df_final)
 
@@ -455,7 +469,9 @@ senha = st.sidebar.text_input("Senha:", type="password")
 if senha == verificar_acesso():
     st.sidebar.success("Acesso Liberado")
     st.title("🏭 Central de Processamento WLM")
-    
+    # --- LOGO ABAIXO DO TITULO ---
+ultima_data_base = obter_ultima_atualizacao()
+st.info(f"📅 **Último dado processado na base:** {ultima_data_base}")
     aba1, aba2, aba3 = st.tabs(["💰 Comissões", "⚙️ Aproveitamento", "🔧 Ajustes Manuais"])
     df_comissao_global = None
     df_aprov_global = None
