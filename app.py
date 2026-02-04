@@ -470,8 +470,8 @@ if senha == verificar_acesso():
     st.sidebar.success("Acesso Liberado")
     st.title("🏭 Central de Processamento WLM")
     # --- LOGO ABAIXO DO TITULO ---
-ultima_data_base = obter_ultima_atualizacao()
-st.info(f"📅 **Último dado processado na base:** {ultima_data_base}")
+    ultima_data_base = obter_ultima_atualizacao()
+    st.info(f"📅 **Último dado processado na base:** {ultima_data_base}")
     aba1, aba2, aba3 = st.tabs(["💰 Comissões", "⚙️ Aproveitamento", "🔧 Ajustes Manuais"])
     df_comissao_global = None
     df_aprov_global = None
