@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -6,6 +7,8 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime
 import re
 import unicodedata
+import time
+import streamlit as st
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Central de Relatórios WLM", layout="wide", page_icon="🔒")
@@ -209,38 +212,38 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
     sh = client.open_by_key(ID_PLANILHA_MESTRA)
     
     try:
+        # Pequena pausa estratégica para não atropelar a API do Google
+        time.sleep(1) 
         ws = sh.worksheet(nome_aba)
         dados_antigos = ws.get_all_records()
         df_antigo = pd.DataFrame(dados_antigos)
-    except:
+    except Exception as e:
+        # Se a aba não existir, começamos do zero
         df_antigo = pd.DataFrame()
 
-    # --- 1. PADRONIZAÇÃO AGRESSIVA (Evita duplicados por erro de digitação/espaço) ---
+    # --- 1. PADRONIZAÇÃO ---
     for col in colunas_chaves:
         if col in novos_dados_df.columns:
             novos_dados_df[col] = novos_dados_df[col].astype(str).str.strip().str.upper()
         if not df_antigo.empty and col in df_antigo.columns:
             df_antigo[col] = df_antigo[col].astype(str).str.strip().str.upper()
 
-    # --- 2. LÓGICA DE SUBSTITUIÇÃO (CLEAN & LOAD) ---
+    # --- 2. LÓGICA DE SUBSTITUIÇÃO ---
     if not df_antigo.empty:
-        # Identifica a coluna de data (pode variar entre as abas)
         col_data = 'Data Processamento' if 'Data Processamento' in novos_dados_df.columns else 'Data'
-        
-        # Pega as datas que estamos subindo agora
         datas_novas = novos_dados_df[col_data].unique()
         
-        # MANTÉM apenas o que NÃO pertence às datas do novo arquivo
-        # Isso deleta as duplicatas e os técnicos que não aparecem no novo relatório
+        # Filtramos apenas o que precisamos manter
         df_final = df_antigo[~df_antigo[col_data].isin(datas_novas)]
-        
-        # Adiciona o novo bloco completo
         df_final = pd.concat([df_final, novos_dados_df], ignore_index=True)
     else:
         df_final = novos_dados_df
     
-    # --- 3. GRAVAÇÃO FINAL ---
+    # --- 3. GRAVAÇÃO ---
     df_final = df_final.fillna(0.0)
+    
+    # Pausa antes de gravar para garantir que o limite de escrita não seja atingido
+    time.sleep(1.5) 
     atualizar_planilha_preservando_formato(sh, nome_aba, df_final)
     return len(df_final)
 
