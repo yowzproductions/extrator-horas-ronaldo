@@ -201,12 +201,24 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
     except:
         df_antigo = pd.DataFrame()
 
-    if not df_antigo.empty:
-        for col in df_antigo.columns: df_antigo[col] = df_antigo[col].astype(str)
-    for col in novos_dados_df.columns: novos_dados_df[col] = novos_dados_df[col].astype(str)
+    # --- BLINDAGEM DE TIPOS ---
+    # Garantimos que tudo que for comparado esteja no mesmo formato
+    for col in colunas_chaves:
+        if col in novos_dados_df.columns:
+            novos_dados_df[col] = novos_dados_df[col].astype(str).str.strip().upper()
+        if not df_antigo.empty and col in df_antigo.columns:
+            df_antigo[col] = df_antigo[col].astype(str).str.strip().upper()
 
-    df_total = pd.concat([df_antigo, novos_dados_df])
-    df_final = df_total.drop_duplicates(subset=colunas_chaves, keep='last')
+    if not df_antigo.empty:
+        # Unifica
+        df_total = pd.concat([df_antigo, novos_dados_df], ignore_index=True)
+        # Remove duplicados mantendo o ÚLTIMO (o que você acabou de carregar)
+        df_final = df_total.drop_duplicates(subset=colunas_chaves, keep='last')
+    else:
+        df_final = novos_dados_df
+    
+    # Limpeza final de segurança para a planilha não receber objetos estranhos
+    df_final = df_final.fillna(0)
     
     atualizar_planilha_preservando_formato(sh, nome_aba, df_final)
     return len(df_final)
