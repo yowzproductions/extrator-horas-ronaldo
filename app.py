@@ -346,7 +346,7 @@ def processar_unificacao():
         df_com = pd.DataFrame(dados_com)
         df_aprov = pd.DataFrame(dados_aprov)
 
-        # Limpeza e Padronização
+        # Limpeza e Padronização de Colunas
         df_com.columns = [c.strip() for c in df_com.columns]
         df_aprov.columns = [c.strip() for c in df_aprov.columns]
         renomear_comissao = {"Data Processamento": "Data", "Sigla Técnico": "Técnico"}
@@ -357,22 +357,26 @@ def processar_unificacao():
         cols_aprov = ['Data', 'Técnico', 'Disp', 'TP', 'TG']
         df_aprov = df_aprov[[c for c in cols_aprov if c in df_aprov.columns]]
 
+        # Padronização de Datas para o Merge
         if 'Data' in df_com.columns:
             df_com['Data'] = df_com['Data'].apply(padronizar_data_quatro_digitos)
         
         if 'Data' in df_aprov.columns:
             df_aprov['Data'] = df_aprov['Data'].apply(padronizar_data_quatro_digitos)
 
+        # Conversão inicial (BR para Float)
         cols_numericas = ['Horas Vendidas', 'Disp', 'TP', 'TG']
         for col in cols_numericas:
             if col in df_com.columns: df_com[col] = df_com[col].apply(converter_br_para_float)
             if col in df_aprov.columns: df_aprov[col] = df_aprov[col].apply(converter_br_para_float)
 
+        # Criação de Chaves de Cruzamento
         df_com['Key_D'] = df_com['Data'].astype(str)
         df_com['Key_T'] = df_com['Técnico'].astype(str)
         df_aprov['Key_D'] = df_aprov['Data'].astype(str)
         df_aprov['Key_T'] = df_aprov['Técnico'].astype(str)
 
+        # Merge (Unificação)
         df_final = pd.merge(
             df_com, df_aprov, 
             left_on=['Key_D', 'Key_T'], right_on=['Key_D', 'Key_T'], 
@@ -380,18 +384,21 @@ def processar_unificacao():
         )
         df_final.fillna(0.0, inplace=True)
         
+        # Consolidação de Colunas após Merge
         df_final['Data'] = df_final.apply(lambda x: x['Data_C'] if x['Data_C'] != 0 and str(x['Data_C']) != "0" else x['Data_A'], axis=1)
         df_final['Técnico'] = df_final.apply(lambda x: x['Técnico_C'] if x['Técnico_C'] != 0 and str(x['Técnico_C']) != "0" else x['Técnico_A'], axis=1)
 
         cols_finais = ['Data', 'Técnico', 'Horas Vendidas', 'Disp', 'TP', 'TG']
         df_final = df_final[[c for c in cols_finais if c in df_final.columns]]
 
-        # 1. DIVIDIR POR 100
+        # --- CORREÇÃO APLICADA AQUI: CONVERSÃO E DIVISÃO POR 100 ---
         for col in ['Horas Vendidas', 'Disp', 'TP', 'TG']:
-             if col in df_final.columns:
-                 df_final[col] = df_final[col] / 100.0
+            if col in df_final.columns:
+                # Forçamos a conversão para número puro antes de dividir
+                df_final[col] = pd.to_numeric(df_final[col], errors='coerce').fillna(0.0)
+                df_final[col] = df_final[col] / 100.0
 
-        # 2. APLICAR AJUSTES (Valores Reais)
+        # 2. APLICAR AJUSTES (Valores Reais vindos da aba Ajustes)
         df_final = aplicar_logica_ajustes(df_final)
         
         # 3. TRADUZIR NOMES (Maquiagem Final para o BI)
