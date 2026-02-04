@@ -201,13 +201,14 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
     except:
         df_antigo = pd.DataFrame()
 
-    # --- BLINDAGEM DE TIPOS ---
-    # Garantimos que tudo que for comparado esteja no mesmo formato
+# --- BLINDAGEM DE TIPOS (VERSÃO CORRIGIDA) ---
     for col in colunas_chaves:
         if col in novos_dados_df.columns:
-            novos_dados_df[col] = novos_dados_df[col].astype(str).str.strip().upper()
+            # Usamos .str para indicar que a operação é no texto de cada célula
+            novos_dados_df[col] = novos_dados_df[col].astype(str).str.strip().str.upper()
+        
         if not df_antigo.empty and col in df_antigo.columns:
-            df_antigo[col] = df_antigo[col].astype(str).str.strip().upper()
+            df_antigo[col] = df_antigo[col].astype(str).str.strip().str.upper()
 
     if not df_antigo.empty:
         # Unifica
