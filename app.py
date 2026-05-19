@@ -336,7 +336,7 @@ def aplicar_traducao_nomes(df_final):
         print(f"Erro na tradução de nomes: {e}")
         return df_final
 
-# --- UNIFICAÇÃO (CORRIGIDA) ---
+# --- UNIFICAÇÃO (COMPLETA E BLINDADA CONTRA BASES VAZIAS) ---
 def processar_unificacao():
     try:
         client = conectar_sheets()
@@ -347,76 +347,95 @@ def processar_unificacao():
         dados_com = ws_com.get_all_records()
         dados_aprov = ws_aprov.get_all_records()
 
-        if not dados_com or not dados_aprov: return False
+        # Se ambas as abas estiverem completamente limpas, encerra sem quebrar
+        if not dados_com and not dados_aprov: 
+            print("Ambas as abas estão vazias. Nada para unificar.")
+            return False
 
-        df_com = pd.DataFrame(dados_com)
-        df_aprov = pd.DataFrame(dados_aprov)
+        # Cria DataFrames vazios estruturados caso uma das abas não tenha dados ainda
+        df_com = pd.DataFrame(dados_com) if dados_com else pd.DataFrame(columns=['Data', 'Técnico', 'Horas Vendidas'])
+        df_aprov = pd.DataFrame(dados_aprov) if dados_aprov else pd.DataFrame(columns=['Data', 'Técnico', 'Disp', 'TP', 'TG'])
 
-        # Limpeza e Padronização de Colunas
+        # Padronização de nomes de colunas (Sanitização de espaços em branco)
         df_com.columns = [c.strip() for c in df_com.columns]
         df_aprov.columns = [c.strip() for c in df_aprov.columns]
         
+        # Alinha nomenclaturas do relatório de comissões
         renomear_comissao = {"Data Processamento": "Data", "Sigla Técnico": "Técnico"}
         df_com.rename(columns=renomear_comissao, inplace=True)
 
+        # Filtragem estrita de escopo
         cols_com = ['Data', 'Técnico', 'Horas Vendidas']
         df_com = df_com[[c for c in cols_com if c in df_com.columns]]
         cols_aprov = ['Data', 'Técnico', 'Disp', 'TP', 'TG']
         df_aprov = df_aprov[[c for c in cols_aprov if c in df_aprov.columns]]
 
-        # Padronização de Datas para o Merge
+        # Tratamento e homogeneização das chaves de data
         if 'Data' in df_com.columns:
             df_com['Data'] = df_com['Data'].apply(padronizar_data_quatro_digitos)
         if 'Data' in df_aprov.columns:
             df_aprov['Data'] = df_aprov['Data'].apply(padronizar_data_quatro_digitos)
 
-        # Conversão inicial (BR para Float)
+        # Conversão de tipos de dados numéricos vindos do padrão brasileiro (BR -> Float)
         cols_numericas = ['Horas Vendidas', 'Disp', 'TP', 'TG']
         for col in cols_numericas:
-            if col in df_com.columns: df_com[col] = df_com[col].apply(converter_br_para_float)
-            if col in df_aprov.columns: df_aprov[col] = df_aprov[col].apply(converter_br_para_float)
+            if col in df_com.columns: 
+                df_com[col] = df_com[col].apply(converter_br_para_float)
+            if col in df_aprov.columns: 
+                df_aprov[col] = df_aprov[col].apply(converter_br_para_float)
 
-        # Criação de Chaves Limpas de Cruzamento
+        # Geração de chaves textuais imutáveis para o relacionamento matemático
         df_com['Key_D'] = df_com['Data'].astype(str).str.strip()
         df_com['Key_T'] = df_com['Técnico'].astype(str).str.strip().str.upper()
         df_aprov['Key_D'] = df_aprov['Data'].astype(str).str.strip()
         df_aprov['Key_T'] = df_aprov['Técnico'].astype(str).str.strip().str.upper()
 
-        # Merge Robusto (Outer)
+        # Execução do relacionamento (Outer Join garante o não-esquecimento de registros órfãos)
         df_final = pd.merge(
             df_com, df_aprov, 
             on=['Key_D', 'Key_T'], 
             how='outer', suffixes=('_C', '_A')
         )
         
-        # --- SOLUÇÃO PREVENTIVA CONTRA ASSIMETRIA ---
-        # Substitui os lambdas complexos por combine_first, que herda os dados válidos automaticamente
-        df_final['Data'] = df_final['Data_C'].replace('', None).combine_first(df_final['Data_A'].replace('', None))
-        df_final['Técnico'] = df_final['Técnico_C'].replace('', None).combine_first(df_final['Técnico_A'].replace('', None))
+        # --- ENGENHARIA DE CONTINUIDADE (A CORREÇÃO DO ERRO) ---
+        # Convertemos strings vazias em objetos nulos reais (None) para o combine_first operar com precisão
+        df_final['Data_C'] = df_final['Data_C'].astype(str).replace(['0', '0.0', ''], None)
+        df_final['Data_A'] = df_final['Data_A'].astype(str).replace(['0', '0.0', ''], None)
+        df_final['Técnico_C'] = df_final['Técnico_C'].astype(str).replace(['0', '0.0', ''], None)
+        df_final['Técnico_A'] = df_final['Técnico_A'].astype(str).replace(['0', '0.0', ''], None)
+
+        # Fusão de colunas redundantes: Prioriza o lado 'Comissões', falhas são sanadas pelo lado 'Aproveitamento'
+        df_final['Data'] = df_final['Data_C'].combine_first(df_final['Data_A'])
+        df_final['Técnico'] = df_final['Técnico_C'].combine_first(df_final['Técnico_A'])
         
-        # Preenche os valores numéricos nulos resultantes do outer merge de forma segura
+        # Expurgamos registros que não possuam chaves primárias válidas após a fusão
+        df_final.dropna(subset=['Data', 'Técnico'], inplace=True)
+
+        # Garantia de preenchimento numérico para evitar erros aritméticos posteriores
         df_final.fillna(0.0, inplace=True)
 
+        # Filtragem final e ordenação de colunas da tabela unificada
         cols_finais = ['Data', 'Técnico', 'Horas Vendidas', 'Disp', 'TP', 'TG']
         df_final = df_final[[c for c in cols_finais if c in df_final.columns]]
 
-        # Conversão e ajuste final de escala
+        # Tratamento numérico final e correção de escala decimal para o BI
         for col in ['Horas Vendidas', 'Disp', 'TP', 'TG']:
             if col in df_final.columns:
                 df_final[col] = pd.to_numeric(df_final[col], errors='coerce').fillna(0.0)
-                # Divisão aplicada de forma vetorizada e segura
                 df_final[col] = df_final[col] / 100.0
 
-        # Aplicação sequencial dos Ajustes e Nomes
+        # Injeção de lógica externa e regras de negócios
         df_final = aplicar_logica_ajustes(df_final)
         df_final = aplicar_traducao_nomes(df_final)
 
+        # Persistência final na aba consolidada
         atualizar_planilha_preservando_formato(sh, "Consolidado", df_final)
         return True
     except Exception as e:
-        print(f"Erro unificação: {e}")
+        # Exibe o erro exato no terminal do servidor Streamlit para auditoria
+        print(f"Erro crítico na rotina de unificação: {e}")
         return False
-
+        
 # --- ROTINA MESTRA ---
 def executar_rotina_global(df_com=None, df_aprov=None):
     status_msg = st.empty()
