@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -8,7 +7,6 @@ from datetime import datetime
 import re
 import unicodedata
 import time
-import streamlit as st
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Central de Relatórios WLM", layout="wide", page_icon="🔒")
@@ -101,6 +99,7 @@ def obter_ultima_atualizacao():
         return ultima_data
     except:
         return "Erro ao ler"
+
 # --- PARSERS (LEITURA) ---
 def parse_comissoes(arquivos):
     dados = []
@@ -197,9 +196,7 @@ def atualizar_planilha_preservando_formato(sh, nome_aba, df_final):
 
     ws.batch_clear(["A2:Z10000"])
     
-    # Preenche vazios com 0.0
     df_final = df_final.fillna(0.0)
-    
     dados_para_enviar = df_final.values.tolist()
     if dados_para_enviar:
         ws.update('A2', dados_para_enviar)
@@ -212,13 +209,11 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
     sh = client.open_by_key(ID_PLANILHA_MESTRA)
     
     try:
-        # Pequena pausa estratégica para não atropelar a API do Google
         time.sleep(1) 
         ws = sh.worksheet(nome_aba)
         dados_antigos = ws.get_all_records()
         df_antigo = pd.DataFrame(dados_antigos)
     except Exception as e:
-        # Se a aba não existir, começamos do zero
         df_antigo = pd.DataFrame()
 
     # --- 1. PADRONIZAÇÃO ---
@@ -233,16 +228,13 @@ def salvar_com_upsert(nome_aba, novos_dados_df, colunas_chaves):
         col_data = 'Data Processamento' if 'Data Processamento' in novos_dados_df.columns else 'Data'
         datas_novas = novos_dados_df[col_data].unique()
         
-        # Filtramos apenas o que precisamos manter
         df_final = df_antigo[~df_antigo[col_data].isin(datas_novas)]
         df_final = pd.concat([df_final, novos_dados_df], ignore_index=True)
     else:
         df_final = novos_dados_df
     
-    # --- 3. GRAVAÇÃO ---
     df_final = df_final.fillna(0.0)
     
-    # Pausa antes de gravar para garantir que o limite de escrita não seja atingido
     time.sleep(1.5) 
     atualizar_planilha_preservando_formato(sh, nome_aba, df_final)
     return len(df_final)
@@ -257,7 +249,6 @@ def salvar_ajuste_manual(data, tecnico, metrica, valor, motivo):
         ws = sh.add_worksheet(title="Ajustes", rows=1000, cols=10)
         ws.append_row(["Data", "Técnico", "Métrica", "Valor", "Motivo", "Data do Registro"])
     
-    # Salva o novo ajuste
     ws.append_row([
         str(data.strftime('%d/%m/%Y')), 
         tecnico, 
@@ -311,33 +302,25 @@ def aplicar_logica_ajustes(df_base):
         print(f"Erro ajustes: {e}")
         return df_base
 
-# --- NOVA FUNÇÃO: TRADUZIR NOMES (VERSÃO BLINDADA) ---
+# --- FUNÇÃO: TRADUZIR NOMES ---
 def aplicar_traducao_nomes(df_final):
-    """
-    Lê a aba 'Nomes' ignorando cabeçalhos e aplica a tradução.
-    Coluna A = Sigla
-    Coluna B = Nome
-    """
     try:
         client = conectar_sheets()
         sh = client.open_by_key(ID_PLANILHA_MESTRA)
         
         try:
             ws_nomes = sh.worksheet("Nomes")
-            # Pega todas as linhas como lista simples
             todas_linhas = ws_nomes.get_all_values()
             
             dicionario_nomes = {}
-            # Assume que a linha 1 é cabeçalho, começa da linha 2
             for row in todas_linhas[1:]: 
-                if len(row) >= 2: # Garante que tem Coluna A e B
+                if len(row) >= 2: 
                     sigla = str(row[0]).strip().upper()
                     nome = str(row[1]).strip()
                     if sigla and nome:
                         dicionario_nomes[sigla] = nome
             
             if dicionario_nomes:
-                # Aplica a troca na coluna Técnico
                 df_final['Técnico'] = df_final['Técnico'].apply(
                     lambda sigla: dicionario_nomes.get(str(sigla).strip().upper(), sigla)
                 )
@@ -353,7 +336,7 @@ def aplicar_traducao_nomes(df_final):
         print(f"Erro na tradução de nomes: {e}")
         return df_final
 
-# --- UNIFICAÇÃO (COMPLETA) ---
+# --- UNIFICAÇÃO (CORRIGIDA) ---
 def processar_unificacao():
     try:
         client = conectar_sheets()
@@ -372,6 +355,7 @@ def processar_unificacao():
         # Limpeza e Padronização de Colunas
         df_com.columns = [c.strip() for c in df_com.columns]
         df_aprov.columns = [c.strip() for c in df_aprov.columns]
+        
         renomear_comissao = {"Data Processamento": "Data", "Sigla Técnico": "Técnico"}
         df_com.rename(columns=renomear_comissao, inplace=True)
 
@@ -383,7 +367,6 @@ def processar_unificacao():
         # Padronização de Datas para o Merge
         if 'Data' in df_com.columns:
             df_com['Data'] = df_com['Data'].apply(padronizar_data_quatro_digitos)
-        
         if 'Data' in df_aprov.columns:
             df_aprov['Data'] = df_aprov['Data'].apply(padronizar_data_quatro_digitos)
 
@@ -393,38 +376,39 @@ def processar_unificacao():
             if col in df_com.columns: df_com[col] = df_com[col].apply(converter_br_para_float)
             if col in df_aprov.columns: df_aprov[col] = df_aprov[col].apply(converter_br_para_float)
 
-        # Criação de Chaves de Cruzamento
-        df_com['Key_D'] = df_com['Data'].astype(str)
-        df_com['Key_T'] = df_com['Técnico'].astype(str)
-        df_aprov['Key_D'] = df_aprov['Data'].astype(str)
-        df_aprov['Key_T'] = df_aprov['Técnico'].astype(str)
+        # Criação de Chaves Limpas de Cruzamento
+        df_com['Key_D'] = df_com['Data'].astype(str).str.strip()
+        df_com['Key_T'] = df_com['Técnico'].astype(str).str.strip().str.upper()
+        df_aprov['Key_D'] = df_aprov['Data'].astype(str).str.strip()
+        df_aprov['Key_T'] = df_aprov['Técnico'].astype(str).str.strip().str.upper()
 
-        # Merge (Unificação)
+        # Merge Robusto (Outer)
         df_final = pd.merge(
             df_com, df_aprov, 
-            left_on=['Key_D', 'Key_T'], right_on=['Key_D', 'Key_T'], 
+            on=['Key_D', 'Key_T'], 
             how='outer', suffixes=('_C', '_A')
         )
-        df_final.fillna(0.0, inplace=True)
         
-        # Consolidação de Colunas após Merge
-        df_final['Data'] = df_final.apply(lambda x: x['Data_C'] if x['Data_C'] != 0 and str(x['Data_C']) != "0" else x['Data_A'], axis=1)
-        df_final['Técnico'] = df_final.apply(lambda x: x['Técnico_C'] if x['Técnico_C'] != 0 and str(x['Técnico_C']) != "0" else x['Técnico_A'], axis=1)
+        # --- SOLUÇÃO PREVENTIVA CONTRA ASSIMETRIA ---
+        # Substitui os lambdas complexos por combine_first, que herda os dados válidos automaticamente
+        df_final['Data'] = df_final['Data_C'].replace('', None).combine_first(df_final['Data_A'].replace('', None))
+        df_final['Técnico'] = df_final['Técnico_C'].replace('', None).combine_first(df_final['Técnico_A'].replace('', None))
+        
+        # Preenche os valores numéricos nulos resultantes do outer merge de forma segura
+        df_final.fillna(0.0, inplace=True)
 
         cols_finais = ['Data', 'Técnico', 'Horas Vendidas', 'Disp', 'TP', 'TG']
         df_final = df_final[[c for c in cols_finais if c in df_final.columns]]
 
-        # --- CORREÇÃO APLICADA AQUI: CONVERSÃO E DIVISÃO POR 100 ---
+        # Conversão e ajuste final de escala
         for col in ['Horas Vendidas', 'Disp', 'TP', 'TG']:
             if col in df_final.columns:
-                # Forçamos a conversão para número puro antes de dividir
                 df_final[col] = pd.to_numeric(df_final[col], errors='coerce').fillna(0.0)
+                # Divisão aplicada de forma vetorizada e segura
                 df_final[col] = df_final[col] / 100.0
 
-        # 2. APLICAR AJUSTES (Valores Reais vindos da aba Ajustes)
+        # Aplicação sequencial dos Ajustes e Nomes
         df_final = aplicar_logica_ajustes(df_final)
-        
-        # 3. TRADUZIR NOMES (Maquiagem Final para o BI)
         df_final = aplicar_traducao_nomes(df_final)
 
         atualizar_planilha_preservando_formato(sh, "Consolidado", df_final)
@@ -478,7 +462,7 @@ senha = st.sidebar.text_input("Senha:", type="password")
 if senha == verificar_acesso():
     st.sidebar.success("Acesso Liberado")
     st.title("🏭 Central de Processamento WLM")
-    # --- LOGO ABAIXO DO TITULO ---
+    
     ultima_data_base = obter_ultima_atualizacao()
     st.info(f"📅 **Último dado processado na base:** {ultima_data_base}")
     aba1, aba2, aba3 = st.tabs(["💰 Comissões", "⚙️ Aproveitamento", "🔧 Ajustes Manuais"])
@@ -537,7 +521,7 @@ if senha == verificar_acesso():
                         if sucesso: st.success("BI Atualizado!")
                 else:
                     st.error("Selecione um técnico.")
-                    
+                        
         st.markdown("### Últimos Ajustes")
         try:
             client = conectar_sheets()
